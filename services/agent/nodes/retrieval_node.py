@@ -101,6 +101,7 @@ class RetrievalNode(BaseNode):
             restaurants=open_restaurants,
             weather=weather,
             route_info=route_info,
+            rejected_by_business_hours=rejected,
         )
 
         state.trace.append(TraceEvent(

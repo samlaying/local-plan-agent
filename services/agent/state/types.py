@@ -53,6 +53,11 @@ class RetrievalResult(BaseModel):
     restaurants: list[POISchema] = Field(default_factory=list)
     weather: str = ""
     route_info: dict[str, Any] = Field(default_factory=dict)
+    rejected_by_business_hours: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="因营业时间不覆盖用户时间窗口而被过滤的 POI 记录。"
+        " 每条记录包含：poi_id、name、reason、business_hours、time_window。",
+    )
 
 
 # ---------------------------------------------------------------------------
