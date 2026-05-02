@@ -13,6 +13,7 @@ LangGraph 迁移路径：
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import date
 from typing import Any
@@ -125,7 +126,7 @@ class IntentParserNode(BaseNode):
         ))
 
         try:
-            raw_data = self._call_llm(state.raw_input)
+            raw_data = await self._call_llm(state.raw_input)
         except LLMError as exc:
             logger.warning("intent_parser: LLM 调用失败: %s", exc)
             state.trace.append(TraceEvent(
@@ -184,8 +185,8 @@ class IntentParserNode(BaseNode):
         logger.info("intent_parser: 完成，scenario=%s", intent.scenario)
         return state
 
-    def _call_llm(self, raw_input: str) -> dict[str, Any]:
-        """调用 LLM 并返回解析后的 dict。"""
+    async def _call_llm(self, raw_input: str) -> dict[str, Any]:
+        """调用 LLM 并返回解析后的 dict。使用 run_in_executor 避免阻塞事件循环。"""
         today = date.today().isoformat()
         system_content = _SYSTEM_PROMPT.format(today=today)
 
@@ -199,7 +200,11 @@ class IntentParserNode(BaseNode):
             required_fields=_INTENT_REQUIRED_FIELDS,
         )
 
-        response = self._llm.chat(messages, temperature=0.2, json_mode=True)
+        loop = asyncio.get_running_loop()
+        response = await loop.run_in_executor(
+            None,
+            lambda: self._llm.chat(messages, temperature=0.2, json_mode=True),
+        )
         return parse_json_response(response, required_fields=_INTENT_REQUIRED_FIELDS)
 
 

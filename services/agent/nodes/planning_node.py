@@ -17,6 +17,7 @@ PlanningNode — 根据 Retrieval Node 的候选 POI，调用 LLM 生成 2-3 个
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -314,11 +315,15 @@ class PlanningNode(BaseNode):
         ]
 
         try:
-            response = self._llm.chat(
-                messages,
-                temperature=0.7,
-                max_tokens=1024,
-                json_mode=True,
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(
+                None,
+                lambda: self._llm.chat(
+                    messages,
+                    temperature=0.7,
+                    max_tokens=1024,
+                    json_mode=True,
+                ),
             )
         except LLMError as exc:
             logger.warning("PlanningNode: LLM 调用失败: %s", exc)
