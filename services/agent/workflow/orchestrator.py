@@ -1,11 +1,7 @@
 """
 Orchestrator — 管理整个 Agent 工作流生命周期的异步协程。
 
-Phase 1 骨架版本：
-- 不接入真实 Agent 节点
-- 发送 mock trace 事件模拟各节点执行
-- 复用已有 MockPOIRepository + activity_workflow 函数生成真实 mock plans
-- 通过 session.queue 接收用户消息，通过 session.send_json 推送进度
+Phase 2：接入真实 Agent 节点（IntentParserNode → RetrievalNode → PlanningNode → VerifierNode）。
 
 消息类型（服务端发送）：
   session_ready / trace / ask / plans_ready /
@@ -24,30 +20,26 @@ import logging
 from datetime import datetime, timezone
 from typing import Any
 
-from app.repositories.mock_poi_repository import MockPOIRepository
-from app.services.activity_workflow import (
-    UserLocationSchema,
-    run_activity_workflow,
-)
+from agent.nodes.intent_parser import IntentParserNode
+from agent.nodes.planning_node import PlanningNode
+from agent.nodes.retrieval_node import RetrievalNode
+from agent.nodes.verifier_node import VerifierNode
 from agent.session.session import Session
+from agent.state.types import PlanningState
+from app.core.llm import get_llm_client
 
 logger = logging.getLogger(__name__)
+
+# Planning + Verifier 最大回环次数
+MAX_PLAN_REVISION = 2
+
+# Clarification 最大追问次数（与 IntentParserNode.MAX_CLARIFICATION_COUNT 保持一致）
+MAX_CLARIFICATION_COUNT = 2
+
 
 # ---------------------------------------------------------------------------
 # 内部辅助
 # ---------------------------------------------------------------------------
-
-_TRACE_NODES: list[tuple[str, str]] = [
-    ("intent_node", "解析用户意图和场景..."),
-    ("profile_node", "加载用户偏好画像..."),
-    ("retrieval_node", "检索周边 POI 和餐厅候选..."),
-    ("planning_node", "生成行程方案..."),
-    ("verifier_node", "校验方案可行性..."),
-]
-
-# 每个节点 mock 运行时间（秒）—— 仅用于骨架演示
-_NODE_DELAY_SECONDS: float = 0.6
-
 
 async def _send(session: Session, msg: dict[str, Any]) -> None:
     """统一推送入口，附加服务端时间戳。"""
@@ -61,6 +53,45 @@ async def _wait_message(session: Session) -> dict[str, Any]:
     return json.loads(raw)
 
 
+async def _run_node_and_stream(session: Session, node: Any) -> None:
+    """运行节点并将新增 trace 事件推送给前端。
+
+    跳过 `[clarification]` 前缀的事件（这些由 Orchestrator 单独处理为 ask 消息）。
+
+    Args:
+        session: 当前会话（含 state 和 send_json）。
+        node: 实现 BaseNode.run(state) -> state 的节点实例。
+    """
+    state = session.state
+    trace_len_before = len(state.trace)
+
+    await node.run(state)
+
+    # 推送本次节点新增的 trace 事件（跳过 clarification 事件）
+    new_events = state.trace[trace_len_before:]
+    for event in new_events:
+        if event.message.startswith("[clarification]"):
+            continue
+        await _send(session, {
+            "type": "trace",
+            "agent": event.agent,
+            "status": event.status,
+            "message": event.message,
+        })
+
+
+def _extract_clarification(state: PlanningState) -> str | None:
+    """从 state.trace 中倒序扫描，找到最新的 [clarification] 事件并返回问题文本。
+
+    Returns:
+        去掉 `[clarification] ` 前缀后的问题文本；若未找到则返回 None。
+    """
+    for event in reversed(state.trace):
+        if event.message.startswith("[clarification]"):
+            return event.message[len("[clarification]"):].strip()
+    return None
+
+
 # ---------------------------------------------------------------------------
 # 主协程
 # ---------------------------------------------------------------------------
@@ -70,31 +101,37 @@ async def run_orchestrator(session: Session) -> None:
 
     完整生命周期：
       1. 等待 start 消息
-      2. 依次发送各节点的 running/done trace 事件
-      3. 调用 activity_workflow 生成 plans，发送 plans_ready
-      4. 等待 plan_confirmed / plan_rejected
-      5. 收到 plan_confirmed → 发送 execution_preview，等待 execution_confirmed
-      6. 收到 execution_confirmed → 发送 execution_result + done
-
-    所有异常均捕获并发送 error 消息给前端，之后退出协程。
+      2. Intent 解析循环（最多 MAX_CLARIFICATION_COUNT 轮追问）
+      3. Retrieval
+      4. Planning + Verifier 回环（最多 MAX_PLAN_REVISION 次）
+      5. 发送 plans_ready
+      6. 等待 plan_confirmed / plan_rejected
+      7. Execution 阶段（现有 mock 逻辑保持不变）
     """
     try:
+        # 初始化节点（共享一个 LLM client）
+        llm_client = get_llm_client()
+        intent_node = IntentParserNode(llm_client=llm_client)
+        retrieval_node = RetrievalNode()
+        planning_node = PlanningNode(llm_client=llm_client)
+        verifier_node = VerifierNode()
+
         await _phase_start(session)
-        await _phase_trace(session)
-        plans = await _phase_generate_plans(session)
+        await _phase_intent(session, intent_node)
+        await _phase_retrieval(session, retrieval_node)
+        await _phase_planning_loop(session, planning_node, verifier_node)
+        plans = await _phase_send_plans_ready(session)
         confirmed_plan = await _phase_plan_selection(session, plans)
         if confirmed_plan is None:
-            # 用户拒绝了所有方案，流程结束
             await _send(session, {"type": "done", "reason": "plan_rejected"})
             return
         await _phase_execution(session, confirmed_plan)
     except asyncio.CancelledError:
-        # WebSocket 断开触发 task cancel，正常退出
         logger.info("Orchestrator cancelled for session %s", session.session_id)
         raise
     except Exception as exc:
         logger.exception("Orchestrator error for session %s: %s", session.session_id, exc)
-        await _send(session, {"type": "error", "message": str(exc), "recoverable": False})
+        await _send(session, {"type": "error", "message": str(exc)})
 
 
 # ---------------------------------------------------------------------------
@@ -109,79 +146,143 @@ async def _phase_start(session: Session) -> None:
             payload = msg.get("payload", {})
             query = payload.get("query", "")
             location = payload.get("location", {})
-            # 将 query 和 location 写入 state 供后续节点使用
             session.state.raw_input = query
-            session.state.intent = None  # 重置，等 intent_node 填入
-            # 把 location 信息存在 state 的 profile 上（Phase 1 骨架：暂存为 dict）
-            # TODO: 将 location 规范化为 UserLocationSchema 存入 state.retrieval
+            session.state.intent = None
+            # 将 location 暂存在 session 上供 Retrieval 使用
             session._location_raw = location  # type: ignore[attr-defined]
             return
-        # 非 start 消息在流程未开始时忽略
         logger.debug("Ignored message before start: %s", msg.get("type"))
 
 
 # ---------------------------------------------------------------------------
-# Phase 2: 模拟各节点 trace 事件
+# Phase 2: Intent 解析循环（最多 MAX_CLARIFICATION_COUNT 轮追问）
 # ---------------------------------------------------------------------------
 
-async def _phase_trace(session: Session) -> None:
-    """按顺序发送各节点的 running → done trace 事件。"""
-    for agent_name, running_msg in _TRACE_NODES:
-        # running
+async def _phase_intent(session: Session, intent_node: IntentParserNode) -> None:
+    """运行 IntentParserNode，有追问时向前端发 ask 消息并等待 user_reply。"""
+    clarification_round = 0
+
+    while True:
+        await _run_node_and_stream(session, intent_node)
+
+        if session.state.intent is not None:
+            # 意图解析成功，退出循环
+            return
+
+        # intent 为 None 表示需要追问
+        clarification_round += 1
+        if clarification_round > MAX_CLARIFICATION_COUNT:
+            # 超过追问上限，强制退出（IntentParserNode 内部会用默认值填充）
+            logger.warning(
+                "Session %s: clarification rounds exhausted, proceeding with defaults",
+                session.session_id,
+            )
+            return
+
+        question = _extract_clarification(session.state)
+        if question is None:
+            logger.warning(
+                "Session %s: intent is None but no clarification found in trace, "
+                "proceeding without further clarification",
+                session.session_id,
+            )
+            return
+
+        # 发送追问给前端
         await _send(session, {
-            "type": "trace",
-            "agent": agent_name,
-            "status": "running",
-            "message": running_msg,
+            "type": "ask",
+            "question": question,
+            "round": clarification_round,
         })
-        await asyncio.sleep(_NODE_DELAY_SECONDS)
-        # done
-        await _send(session, {
-            "type": "trace",
-            "agent": agent_name,
-            "status": "done",
-            "message": f"{agent_name} 完成",
-        })
+
+        # 等待用户回复
+        while True:
+            msg = await _wait_message(session)
+            if msg.get("type") == "user_reply":
+                user_reply = msg.get("text", "")
+                # 将回复拼接到原始输入，供节点下一轮解析
+                session.state.raw_input = session.state.raw_input + " " + user_reply
+                break
+            if msg.get("type") == "cancel":
+                raise asyncio.CancelledError
+            logger.debug("Ignored message while waiting for user_reply: %s", msg.get("type"))
 
 
 # ---------------------------------------------------------------------------
-# Phase 3: 生成 plans 并推送 plans_ready
+# Phase 3: Retrieval
 # ---------------------------------------------------------------------------
 
-async def _phase_generate_plans(session: Session) -> list[dict[str, Any]]:
-    """复用 activity_workflow 生成 plans，发送 plans_ready 消息。"""
-    raw_input = session.state.raw_input or "今天下午带孩子出去玩"
-    location_raw: dict[str, Any] = getattr(session, "_location_raw", {})
-    location = UserLocationSchema(
-        city=location_raw.get("city", "Shanghai"),
-        address=location_raw.get("address", "Home"),
-        lat=location_raw.get("lat"),
-        lng=location_raw.get("lng"),
-    )
+async def _phase_retrieval(session: Session, retrieval_node: RetrievalNode) -> None:
+    """运行 RetrievalNode，推送 trace 事件。"""
+    await _run_node_and_stream(session, retrieval_node)
 
-    # run_activity_workflow 是同步的，在线程池中执行避免阻塞事件循环
-    loop = asyncio.get_running_loop()
-    repo = MockPOIRepository()
-    result = await loop.run_in_executor(
-        None,
-        lambda: run_activity_workflow(raw_input, location, repo),
-    )
 
-    # 将 PlanSchema 列表序列化为 JSON-safe dict
-    plans_data = [plan.model_dump(mode="json") for plan in result.plans]
+# ---------------------------------------------------------------------------
+# Phase 4: Planning + Verifier 回环（最多 MAX_PLAN_REVISION 次）
+# ---------------------------------------------------------------------------
+
+async def _phase_planning_loop(
+    session: Session,
+    planning_node: PlanningNode,
+    verifier_node: VerifierNode,
+) -> None:
+    """运行 Planning → Verifier 回环，有拒绝时最多重生成 MAX_PLAN_REVISION 次。"""
+    for iteration in range(MAX_PLAN_REVISION + 1):
+        revision_before = session.state.plan_revision_count
+
+        await _run_node_and_stream(session, planning_node)
+        await _run_node_and_stream(session, verifier_node)
+
+        revision_after = session.state.plan_revision_count
+
+        # plan_revision_count 没有增加，说明 Verifier 通过了
+        if revision_after == revision_before:
+            break
+
+        if iteration < MAX_PLAN_REVISION:
+            logger.info(
+                "Session %s: verifier rejected plans (revision %d/%d), retrying planning",
+                session.session_id,
+                revision_after,
+                MAX_PLAN_REVISION,
+            )
+        else:
+            logger.warning(
+                "Session %s: max plan revisions reached (%d), using current plans",
+                session.session_id,
+                MAX_PLAN_REVISION,
+            )
+
+
+# ---------------------------------------------------------------------------
+# Phase 5: 发送 plans_ready
+# ---------------------------------------------------------------------------
+
+async def _phase_send_plans_ready(session: Session) -> list[dict[str, Any]]:
+    """将 state.candidate_plans 序列化并发送 plans_ready 消息。
+
+    Returns:
+        序列化后的 plans_data 列表（供后续 plan_confirmed 查找用）。
+    """
+    plans_data = [plan.model_dump(mode="json") for plan in session.state.candidate_plans]
+
+    intent_data = (
+        session.state.intent.model_dump(mode="json")
+        if session.state.intent is not None
+        else {}
+    )
 
     await _send(session, {
         "type": "plans_ready",
         "plans": plans_data,
-        "intent": result.intent.model_dump(mode="json"),
-        "rejected_candidates": result.rejected_candidates,
+        "intent": intent_data,
     })
 
     return plans_data
 
 
 # ---------------------------------------------------------------------------
-# Phase 4: 等待用户选择方案
+# Phase 6: 等待用户选择方案
 # ---------------------------------------------------------------------------
 
 async def _phase_plan_selection(
@@ -198,29 +299,24 @@ async def _phase_plan_selection(
         msg_type = msg.get("type")
 
         if msg_type == "plan_confirmed":
-            payload = msg.get("payload", {})
-            plan_id = payload.get("plan_id")
-            # 从生成的 plans 中找到对应方案
+            plan_id = msg.get("plan_id")
             confirmed = next(
                 (p for p in plans if p.get("id") == plan_id),
-                plans[0] if plans else None,  # 兜底取第一个
+                plans[0] if plans else None,
             )
-            session.state.confirmed_plan = None  # Phase 1 骨架：不写入 Pydantic 对象
             return confirmed
 
         if msg_type == "plan_rejected":
-            # 用户明确拒绝，流程终止
             return None
 
         if msg_type == "cancel":
             return None
 
-        # user_reply / 其他消息：暂时忽略（Phase 1 不支持追问）
         logger.debug("Ignored message in plan_selection phase: %s", msg_type)
 
 
 # ---------------------------------------------------------------------------
-# Phase 5: 执行预览 + 确认
+# Phase 7: 执行预览 + 确认（保持现有 mock 逻辑不变）
 # ---------------------------------------------------------------------------
 
 async def _phase_execution(
@@ -228,7 +324,6 @@ async def _phase_execution(
     confirmed_plan: dict[str, Any],
 ) -> None:
     """发送 execution_preview，等待 execution_confirmed，再发 execution_result + done。"""
-    # 从已确认 plan 的 actions 构建 execution_preview
     actions = confirmed_plan.get("actions", [])
     await _send(session, {
         "type": "execution_preview",
@@ -238,7 +333,6 @@ async def _phase_execution(
         "summary": f"即将执行 {len(actions)} 项操作，请确认",
     })
 
-    # 等待用户确认执行
     while True:
         msg = await _wait_message(session)
         msg_type = msg.get("type")
@@ -251,7 +345,6 @@ async def _phase_execution(
 
         logger.debug("Ignored message in execution phase: %s", msg_type)
 
-    # Mock 执行结果
     execution_results = _build_mock_execution_results(actions)
 
     await _send(session, {

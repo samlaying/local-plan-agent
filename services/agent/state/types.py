@@ -98,8 +98,10 @@ class PlanningState:
 
     # Verifier 阶段：回环计数，最多重生成 2 次
     plan_revision_count: int = 0
-    # Verifier 拒绝原因列表（供 Planning Node 重试时参考）
-    verifier_rejection_reasons: list[dict] = field(default_factory=list)
+
+    # Verifier 阶段：记录拒绝原因，供 Planning Node 重试时参考
+    # 每次 Verifier 拒绝后追加一批 dict，格式：{plan_id, plan_title, violations: [...]}
+    verifier_rejection_reasons: list[dict[str, Any]] = field(default_factory=list)
 
     # 用户确认的方案
     confirmed_plan: PlanSchema | None = None
@@ -112,3 +114,31 @@ class PlanningState:
 
     # Trace：前端可订阅的 Agent 执行事件流
     trace: list[TraceEvent] = field(default_factory=list)
+
+    @property
+    def verifier_rejection_reason(self) -> str | None:
+        """将最新一批拒绝原因格式化为字符串，供 PlanningNode 使用。
+
+        PlanningNode 内部读取 state.verifier_rejection_reason（单数），
+        而 VerifierNode 写入 state.verifier_rejection_reasons（复数，list）。
+        此 property 桥接两者：取最后一批拒绝原因，汇总为可读字符串。
+
+        Returns:
+            格式化后的拒绝原因字符串；若无拒绝记录则返回 None。
+        """
+        if not self.verifier_rejection_reasons:
+            return None
+
+        # 取最后一批（最近一次 Verifier 运行的结果）
+        last_batch = self.verifier_rejection_reasons[-1:]
+        parts: list[str] = []
+        for rejection in last_batch:
+            plan_id = rejection.get("plan_id", "unknown")
+            plan_title = rejection.get("plan_title", "")
+            violations: list[dict[str, Any]] = rejection.get("violations", [])
+            violation_details = "; ".join(
+                v.get("detail", str(v)) for v in violations
+            )
+            parts.append(f"方案 {plan_id}（{plan_title}）：{violation_details}")
+
+        return "\n".join(parts) if parts else None
