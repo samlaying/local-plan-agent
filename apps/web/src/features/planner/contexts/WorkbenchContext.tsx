@@ -198,6 +198,9 @@ export const WorkbenchProvider: React.FC<WorkbenchProviderProps> = ({ children }
 
       onExecutionPreview: ({ actions }) => {
         setExecutionActions(actions);
+        if (STATE_TRANSITIONS[currentStateRef.current].includes('execution_confirm')) {
+          setCurrentState('execution_confirm');
+        }
       },
 
       onExecutionResult: ({ results }) => {
@@ -214,7 +217,8 @@ export const WorkbenchProvider: React.FC<WorkbenchProviderProps> = ({ children }
       onError: ({ message: msg, recoverable }) => {
         setError(msg);
         setIsLoading(false);
-        if (!recoverable) {
+        // Default recoverable to true if backend omits the field
+        if ((recoverable ?? true) === false) {
           // Fall back to input so user can retry
           setCurrentState('input');
         }

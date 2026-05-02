@@ -94,7 +94,7 @@ async def run_orchestrator(session: Session) -> None:
         raise
     except Exception as exc:
         logger.exception("Orchestrator error for session %s: %s", session.session_id, exc)
-        await _send(session, {"type": "error", "message": str(exc)})
+        await _send(session, {"type": "error", "message": str(exc), "recoverable": False})
 
 
 # ---------------------------------------------------------------------------
@@ -106,8 +106,9 @@ async def _phase_start(session: Session) -> None:
     while True:
         msg = await _wait_message(session)
         if msg.get("type") == "start":
-            query = msg.get("query", "")
-            location = msg.get("location", {})
+            payload = msg.get("payload", {})
+            query = payload.get("query", "")
+            location = payload.get("location", {})
             # 将 query 和 location 写入 state 供后续节点使用
             session.state.raw_input = query
             session.state.intent = None  # 重置，等 intent_node 填入
@@ -197,7 +198,8 @@ async def _phase_plan_selection(
         msg_type = msg.get("type")
 
         if msg_type == "plan_confirmed":
-            plan_id = msg.get("plan_id")
+            payload = msg.get("payload", {})
+            plan_id = payload.get("plan_id")
             # 从生成的 plans 中找到对应方案
             confirmed = next(
                 (p for p in plans if p.get("id") == plan_id),

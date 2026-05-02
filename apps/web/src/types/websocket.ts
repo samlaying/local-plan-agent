@@ -48,7 +48,7 @@ export interface WsSessionReadyData {
   session_id: string;
 }
 
-export type TraceStatus = 'running' | 'completed' | 'failed';
+export type TraceStatus = 'running' | 'done' | 'error';
 
 export interface WsTraceData {
   agent: string;

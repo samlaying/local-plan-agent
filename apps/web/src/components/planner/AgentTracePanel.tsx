@@ -64,8 +64,8 @@ export const AgentTracePanel: React.FC = () => {
           {traceEvents.map((event, index) => {
             const isLast = index === traceEvents.length - 1;
             const isRunning = event.status === 'running';
-            const isDone = event.status === 'completed';
-            const isFailed = event.status === 'failed';
+            const isDone = event.status === 'done';
+            const isFailed = event.status === 'error';
 
             const Icon = isDone ? CheckCircleIcon : ClockIcon;
 
