@@ -98,6 +98,8 @@ class PlanningState:
 
     # Verifier 阶段：回环计数，最多重生成 2 次
     plan_revision_count: int = 0
+    # Verifier 拒绝原因列表（供 Planning Node 重试时参考）
+    verifier_rejection_reasons: list[dict] = field(default_factory=list)
 
     # 用户确认的方案
     confirmed_plan: PlanSchema | None = None
