@@ -1,0 +1,18 @@
+[
+  {
+    "from": "home_mock",
+    "to": "poi_mock_001",
+    "transport_mode": "driving",
+    "distance_meters": 5200,
+    "duration_minutes": 18,
+    "mock": true
+  },
+  {
+    "from": "poi_mock_001",
+    "to": "poi_mock_002",
+    "transport_mode": "walking",
+    "distance_meters": 180,
+    "duration_minutes": 4,
+    "mock": true
+  }
+]

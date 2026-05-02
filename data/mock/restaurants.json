@@ -1,0 +1,13 @@
+[
+  {
+    "id": "restaurant_mock_001",
+    "name": "清爽简餐厨房",
+    "category": "healthy_casual",
+    "avg_price": 80,
+    "diet_tags": ["low_oil", "high_protein", "vegetable_friendly"],
+    "kid_friendly": true,
+    "queue_supported": true,
+    "reservation_supported": true,
+    "mock": true
+  }
+]

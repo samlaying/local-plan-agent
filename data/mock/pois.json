@@ -1,0 +1,28 @@
+[
+  {
+    "id": "poi_mock_001",
+    "provider": "mock",
+    "name": "亲子室内探索馆",
+    "category": "activity",
+    "address": "示例商场 3 层",
+    "location": {
+      "lat": 31.2304,
+      "lng": 121.4737
+    },
+    "tags": ["indoor", "family", "child_friendly"],
+    "mock": true
+  },
+  {
+    "id": "poi_mock_002",
+    "provider": "mock",
+    "name": "清爽简餐厨房",
+    "category": "restaurant",
+    "address": "示例商场 4 层",
+    "location": {
+      "lat": 31.231,
+      "lng": 121.4741
+    },
+    "tags": ["healthy", "low_oil", "kid_friendly"],
+    "mock": true
+  }
+]

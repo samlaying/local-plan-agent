@@ -1,0 +1,8 @@
+[
+  {
+    "provider": "mock_restaurant",
+    "action_type": "take_number",
+    "status": "available",
+    "estimated_wait_minutes": 15
+  }
+]
