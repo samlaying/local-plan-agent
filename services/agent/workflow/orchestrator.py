@@ -20,13 +20,17 @@ import logging
 from datetime import datetime, timezone
 from typing import Any
 
+from agent.nodes.execution_node import ExecutionNode
+from agent.nodes.feedback_node import FeedbackNode
 from agent.nodes.intent_parser import IntentParserNode
 from agent.nodes.planning_node import PlanningNode
+from agent.nodes.profile_node import ProfileNode
 from agent.nodes.retrieval_node import RetrievalNode
 from agent.nodes.verifier_node import VerifierNode
 from agent.session.session import Session
 from agent.state.types import PlanningState
 from app.core.llm import get_llm_client
+from app.repositories.user_profile_repository import UserProfileRepository
 
 logger = logging.getLogger(__name__)
 
@@ -114,12 +118,15 @@ async def run_orchestrator(session: Session) -> None:
         # 初始化节点（共享一个 LLM client）
         llm_client = get_llm_client()
         intent_node = IntentParserNode(llm_client=llm_client)
+        profile_repo = UserProfileRepository()
+        profile_node = ProfileNode(repository=profile_repo)
         retrieval_node = RetrievalNode()
         planning_node = PlanningNode(llm_client=llm_client)
         verifier_node = VerifierNode()
 
         await _phase_start(session)
         await _phase_intent(session, intent_node)
+        await _run_node_and_stream(session, profile_node)
 
         confirmed_plan = await _phase_retrieval_planning_loop(
             session, retrieval_node, planning_node, verifier_node
@@ -426,7 +433,18 @@ async def _phase_execution(
 
         logger.debug("Ignored message in execution phase: %s", msg_type)
 
-    execution_results = _build_mock_execution_results(actions)
+    # 用 ExecutionNode 执行动作（替代 mock 逻辑）
+    execution_node = ExecutionNode()
+    await _run_node_and_stream(session, execution_node)
+
+    execution_results = [
+        {
+            "action_type": r.action_type,
+            "success": r.success,
+            "detail": r.detail,
+        }
+        for r in session.state.execution_results
+    ]
 
     await _send(session, {
         "type": "execution_result",
@@ -435,6 +453,11 @@ async def _phase_execution(
         "success_count": sum(1 for r in execution_results if r["success"]),
         "total_count": len(execution_results),
     })
+
+    # FeedbackNode：fire-and-forget，在发 done 之前触发
+    feedback_repo = UserProfileRepository()
+    feedback_node = FeedbackNode(repository=feedback_repo)
+    asyncio.create_task(feedback_node.run(session.state))
 
     await _send(session, {
         "type": "done",
