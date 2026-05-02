@@ -4,10 +4,11 @@ PlanningNode — 根据 Retrieval Node 的候选 POI，调用 LLM 生成 2-3 个
 核心流程：
 1. 将候选 POI 序列化为文本，构建 LLM prompt
 2. 如果存在 verifier_rejection_reason，在 prompt 中明确指出上一轮问题
-3. LLM 返回 JSON，包含每个方案选择的 POI id 和顺序
-4. 根据 LLM 选择从 retrieval_result 中找到对应 POI 对象
-5. 复用 activity_workflow 中的 _build_plan / generate_actions 组装完整 PlanSchema
-6. 降级：LLM 失败时回退到纯规则的 generate_plans
+3. 如果存在 preference_adjustments，在 prompt 末尾追加用户偏好调整要求
+4. LLM 返回 JSON，包含每个方案选择的 POI id 和顺序
+5. 根据 LLM 选择从 retrieval_result 中找到对应 POI 对象
+6. 复用 activity_workflow 中的 _build_plan / generate_actions 组装完整 PlanSchema
+7. 降级：LLM 失败时回退到纯规则的 generate_plans
 
 节点约束：
 - 继承 BaseNode，通过构造函数接收 LLMClient
@@ -77,6 +78,13 @@ _REJECTION_HINT_TEMPLATE = """\
 请重新选择地点和组合方式，确保新方案不再出现上述问题。
 """
 
+_PREFERENCE_ADJUSTMENTS_TEMPLATE = """\
+
+[用户偏好调整]
+用户对上一版方案提出了以下调整要求，请在本次方案中满足：
+{adjustments}
+"""
+
 _REQUIRED_FIELDS = ["plans"]
 
 # ---------------------------------------------------------------------------
@@ -127,6 +135,7 @@ def _build_user_message(
     intent: UserIntentSchema,
     retrieval: RetrievalResult,
     rejection_reason: str | None,
+    preference_adjustments: list[str] | None = None,
 ) -> str:
     """构建发送给 LLM 的用户消息内容。"""
     parts: list[str] = []
@@ -150,6 +159,10 @@ def _build_user_message(
 
     if rejection_reason:
         parts.append(_REJECTION_HINT_TEMPLATE.format(reason=rejection_reason))
+
+    if preference_adjustments:
+        adjustments_text = "\n".join(f"- {item}" for item in preference_adjustments)
+        parts.append(_PREFERENCE_ADJUSTMENTS_TEMPLATE.format(adjustments=adjustments_text))
 
     parts.append("\n请根据以上候选列表生成 2-3 个行程方案，以 JSON 格式返回。")
     return "".join(parts)
@@ -237,6 +250,7 @@ class PlanningNode(BaseNode):
       - state.retrieval: RetrievalResult（活动和餐厅候选列表）
       - state.intent: UserIntentSchema（用户约束）
       - state.verifier_rejection_reason: str | None（上一轮被拒绝的原因）
+      - state.preference_adjustments: list[str]（用户偏好调整指令）
 
     输出（写入 state）：
       - state.candidate_plans: list[PlanSchema]（2-3 个候选方案，含 actions）
@@ -272,7 +286,12 @@ class PlanningNode(BaseNode):
             ))
             return state
 
-        plans = await self._generate_with_llm(intent, retrieval, state.verifier_rejection_reason)
+        plans = await self._generate_with_llm(
+            intent,
+            retrieval,
+            state.verifier_rejection_reason,
+            state.preference_adjustments,
+        )
 
         if not plans:
             # LLM 路径失败，回退到规则方式
@@ -304,13 +323,16 @@ class PlanningNode(BaseNode):
         intent: UserIntentSchema,
         retrieval: RetrievalResult,
         rejection_reason: str | None,
+        preference_adjustments: list[str] | None = None,
     ) -> list[PlanSchema]:
         """调用 LLM 生成方案选择，然后组装 PlanSchema。失败时返回空列表。"""
         messages = [
             LLMMessage(role="system", content=_SYSTEM_PROMPT),
             LLMMessage(
                 role="user",
-                content=_build_user_message(intent, retrieval, rejection_reason),
+                content=_build_user_message(
+                    intent, retrieval, rejection_reason, preference_adjustments
+                ),
             ),
         ]
 

@@ -36,6 +36,9 @@ MAX_PLAN_REVISION = 2
 # Clarification 最大追问次数（与 IntentParserNode.MAX_CLARIFICATION_COUNT 保持一致）
 MAX_CLARIFICATION_COUNT = 2
 
+# 用户拒绝方案后最大重检索规划次数
+MAX_PREFERENCE_REVISION = 3
+
 
 # ---------------------------------------------------------------------------
 # 内部辅助
@@ -102,11 +105,10 @@ async def run_orchestrator(session: Session) -> None:
     完整生命周期：
       1. 等待 start 消息
       2. Intent 解析循环（最多 MAX_CLARIFICATION_COUNT 轮追问）
-      3. Retrieval
-      4. Planning + Verifier 回环（最多 MAX_PLAN_REVISION 次）
-      5. 发送 plans_ready
-      6. 等待 plan_confirmed / plan_rejected
-      7. Execution 阶段（现有 mock 逻辑保持不变）
+      3. Retrieval → Planning + Verifier 回环 → plans_ready → 等待用户选择
+         如果用户拒绝，读取 feedback 并追加到 preference_adjustments，重新从
+         Retrieval 开始，最多重试 MAX_PREFERENCE_REVISION 次
+      4. Execution 阶段（现有 mock 逻辑保持不变）
     """
     try:
         # 初始化节点（共享一个 LLM client）
@@ -118,13 +120,15 @@ async def run_orchestrator(session: Session) -> None:
 
         await _phase_start(session)
         await _phase_intent(session, intent_node)
-        await _phase_retrieval(session, retrieval_node)
-        await _phase_planning_loop(session, planning_node, verifier_node)
-        plans = await _phase_send_plans_ready(session)
-        confirmed_plan = await _phase_plan_selection(session, plans)
+
+        confirmed_plan = await _phase_retrieval_planning_loop(
+            session, retrieval_node, planning_node, verifier_node
+        )
+
         if confirmed_plan is None:
             await _send(session, {"type": "done", "reason": "plan_rejected"})
             return
+
         await _phase_execution(session, confirmed_plan)
     except asyncio.CancelledError:
         logger.info("Orchestrator cancelled for session %s", session.session_id)
@@ -209,6 +213,79 @@ async def _phase_intent(session: Session, intent_node: IntentParserNode) -> None
 
 
 # ---------------------------------------------------------------------------
+# Phase 3+5+6: Retrieval → Planning+Verifier → plans_ready → 用户选择
+#              用户拒绝时最多重试 MAX_PREFERENCE_REVISION 次
+# ---------------------------------------------------------------------------
+
+async def _phase_retrieval_planning_loop(
+    session: Session,
+    retrieval_node: RetrievalNode,
+    planning_node: PlanningNode,
+    verifier_node: VerifierNode,
+) -> dict[str, Any] | None:
+    """外层循环：用户拒绝方案后根据 feedback 重新检索规划。
+
+    最多执行 MAX_PREFERENCE_REVISION 次完整的 Retrieval → Planning → plans_ready 流程。
+    超过次数后直接发送 done 并返回 None。
+
+    Returns:
+        用户确认的 plan dict，或 None（用户拒绝且达到最大重试次数 / cancel）。
+    """
+    for revision in range(MAX_PREFERENCE_REVISION):
+        # Phase 3: Retrieval
+        await _phase_retrieval(session, retrieval_node)
+
+        # Phase 4: Planning + Verifier 回环
+        await _phase_planning_loop(session, planning_node, verifier_node)
+
+        # Phase 5: 发送 plans_ready
+        plans = await _phase_send_plans_ready(session)
+
+        # Phase 6: 等待用户选择
+        msg = await _phase_plan_selection_raw(session, plans)
+
+        if msg is None:
+            # cancel
+            return None
+
+        if msg["confirmed"]:
+            return msg["plan"]
+
+        # 用户拒绝 — 读取 feedback，追加到 preference_adjustments
+        feedback: str = msg.get("feedback", "") or ""
+        if feedback:
+            session.state.preference_adjustments.append(feedback)
+
+        remaining = MAX_PREFERENCE_REVISION - revision - 1
+        if remaining == 0:
+            logger.info(
+                "Session %s: max preference revisions reached (%d), ending session",
+                session.session_id,
+                MAX_PREFERENCE_REVISION,
+            )
+            await _send(session, {"type": "done", "reason": "max_revisions_reached"})
+            return None
+
+        # 发送 trace 事件，告知用户正在重新规划
+        await _send(session, {
+            "type": "trace",
+            "agent": "orchestrator",
+            "status": "running",
+            "message": "正在根据您的反馈重新规划...",
+        })
+
+        logger.info(
+            "Session %s: plan rejected (revision %d/%d), re-running retrieval+planning",
+            session.session_id,
+            revision + 1,
+            MAX_PREFERENCE_REVISION,
+        )
+
+    # 不应到达此处，但作为安全兜底
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Phase 3: Retrieval
 # ---------------------------------------------------------------------------
 
@@ -282,17 +359,20 @@ async def _phase_send_plans_ready(session: Session) -> list[dict[str, Any]]:
 
 
 # ---------------------------------------------------------------------------
-# Phase 6: 等待用户选择方案
+# Phase 6: 等待用户选择方案（内部版，返回结构化结果）
 # ---------------------------------------------------------------------------
 
-async def _phase_plan_selection(
+async def _phase_plan_selection_raw(
     session: Session,
     plans: list[dict[str, Any]],
 ) -> dict[str, Any] | None:
     """等待 plan_confirmed 或 plan_rejected 消息。
 
     Returns:
-        已确认的 plan dict，或 None（用户拒绝）。
+        dict with:
+          {"confirmed": True, "plan": <plan dict>}  — 用户确认
+          {"confirmed": False, "feedback": <str>}    — 用户拒绝（含可选 feedback）
+        或 None（cancel）。
     """
     while True:
         msg = await _wait_message(session)
@@ -304,10 +384,11 @@ async def _phase_plan_selection(
                 (p for p in plans if p.get("id") == plan_id),
                 plans[0] if plans else None,
             )
-            return confirmed
+            return {"confirmed": True, "plan": confirmed}
 
         if msg_type == "plan_rejected":
-            return None
+            feedback = msg.get("payload", {}).get("feedback", "") or msg.get("feedback", "") or ""
+            return {"confirmed": False, "feedback": feedback}
 
         if msg_type == "cancel":
             return None
