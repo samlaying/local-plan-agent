@@ -1,28 +1,58 @@
-[
-  {
-    "id": "poi_mock_001",
-    "provider": "mock",
-    "name": "亲子室内探索馆",
-    "category": "activity",
-    "address": "示例商场 3 层",
-    "location": {
-      "lat": 31.2304,
-      "lng": 121.4737
-    },
-    "tags": ["indoor", "family", "child_friendly"],
-    "mock": true
+{
+  "version": "2026-05-02",
+  "city": "Shanghai",
+  "origin": {
+    "id": "home_mock",
+    "name": "Default Home Origin",
+    "address": "Example Residential Compound, Xuhui District, Shanghai",
+    "location": {"lat": 31.2029, "lng": 121.4436}
   },
-  {
-    "id": "poi_mock_002",
-    "provider": "mock",
-    "name": "清爽简餐厨房",
-    "category": "restaurant",
-    "address": "示例商场 4 层",
-    "location": {
-      "lat": 31.231,
-      "lng": 121.4741
+  "supported_scenarios": [
+    {
+      "id": "family_weight_loss_child5",
+      "label": "Family: wife is losing weight, child is 5",
+      "participants": [{"type": "adult", "count": 2}, {"type": "child", "count": 1, "age": 5}],
+      "diet_requirements": ["low_oil", "high_protein", "vegetable_friendly"],
+      "activity_preferences": ["child_friendly", "low_intensity", "nearby"]
     },
-    "tags": ["healthy", "low_oil", "kid_friendly"],
-    "mock": true
-  }
-]
+    {
+      "id": "friends_4_mixed_gender",
+      "label": "Friends: 4 people, 2 male and 2 female",
+      "participants": [{"type": "adult", "count": 4}],
+      "diet_requirements": [],
+      "activity_preferences": ["group_activity", "mixed_gender", "social"]
+    }
+  ],
+  "pois": [
+    {"ref": "family_activity_001", "source": "activities.json"},
+    {"ref": "family_activity_002", "source": "activities.json"},
+    {"ref": "family_activity_003", "source": "activities.json"},
+    {"ref": "family_activity_004", "source": "activities.json"},
+    {"ref": "family_activity_005", "source": "activities.json"},
+    {"ref": "family_activity_006", "source": "activities.json"},
+    {"ref": "family_activity_007", "source": "activities.json"},
+    {"ref": "family_activity_008", "source": "activities.json"},
+    {"ref": "family_activity_009", "source": "activities.json"},
+    {"ref": "family_activity_010", "source": "activities.json"},
+    {"ref": "friends_activity_001", "source": "activities.json"},
+    {"ref": "friends_activity_002", "source": "activities.json"},
+    {"ref": "friends_activity_003", "source": "activities.json"},
+    {"ref": "friends_activity_004", "source": "activities.json"},
+    {"ref": "friends_activity_005", "source": "activities.json"},
+    {"ref": "friends_activity_006", "source": "activities.json"},
+    {"ref": "friends_activity_007", "source": "activities.json"},
+    {"ref": "friends_activity_008", "source": "activities.json"},
+    {"ref": "friends_activity_009", "source": "activities.json"},
+    {"ref": "friends_activity_010", "source": "activities.json"},
+    {"ref": "restaurant_001", "source": "restaurants.json"},
+    {"ref": "restaurant_002", "source": "restaurants.json"},
+    {"ref": "restaurant_003", "source": "restaurants.json"},
+    {"ref": "restaurant_004", "source": "restaurants.json"},
+    {"ref": "restaurant_005", "source": "restaurants.json"},
+    {"ref": "restaurant_006", "source": "restaurants.json"},
+    {"ref": "restaurant_007", "source": "restaurants.json"},
+    {"ref": "restaurant_008", "source": "restaurants.json"},
+    {"ref": "restaurant_009", "source": "restaurants.json"},
+    {"ref": "restaurant_010", "source": "restaurants.json"}
+  ]
+}
