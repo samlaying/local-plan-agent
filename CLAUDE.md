@@ -2,6 +2,13 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## 开发协作规范（必须遵守）
+
+### Subagent 使用规则
+1. **主对话保持干净**：所有实际编码任务委托给 subagent 完成，主对话只做方向确认和决策，不直接写代码。
+2. **Prompt 不包含明确代码位置**：给 subagent 的任务描述不得包含具体文件路径或行号。Subagent 必须自己探索定位，遵循第一性原则理解任务意图，避免依赖可能不准确的路径信息。
+3. **Bug 只记录不修复**：Subagent 开发过程中发现的任何 bug 或潜在问题，统一追加到 `.claude/BUGS.md`，不在当前开发任务中处理，后续由主对话单独评估是否修复。
+
 ## Project Overview
 
 LocalPlan Agent is a local activity planning system that generates 4-6 hour executable plans from natural language input. The system uses a custom workflow state machine (designed for future LangGraph migration) and currently operates with mock data.
