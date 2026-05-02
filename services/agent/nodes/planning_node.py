@@ -104,6 +104,24 @@ def _serialize_poi_list(pois: list[POISchema], label: str) -> str:
     return "".join(lines)
 
 
+def _format_time_window(intent: UserIntentSchema) -> str:
+    """
+    将时间窗口格式化为可读字符串。
+
+    - 若 start 和 end 均不为 None，返回 "YYYY-MM-DD HH:MM–HH:MM"
+    - 否则，用 label（如 "下午"）或 duration_hours_min/max（如 "4–6小时"）作为替代，
+      避免在 prompt 中出现无意义的 "None–None"。
+    """
+    tw = intent.time_window
+    if tw.start is not None and tw.end is not None:
+        return f"{tw.date} {tw.start}–{tw.end}"
+
+    # 降级：使用 label 或时长范围描述时间窗口
+    if tw.label:
+        return f"{tw.date} {tw.label}"
+    return f"{tw.date}（约 {intent.duration_hours_min}–{intent.duration_hours_max} 小时）"
+
+
 def _build_user_message(
     intent: UserIntentSchema,
     retrieval: RetrievalResult,
@@ -115,7 +133,7 @@ def _build_user_message(
     parts.append(
         f"用户需求：{intent.raw_text}\n"
         f"场景：{intent.scenario}\n"
-        f"出行时间：{intent.time_window.date} {intent.time_window.start}–{intent.time_window.end}\n"
+        f"出行时间：{_format_time_window(intent)}\n"
         f"出行时长：{intent.duration_hours_min}–{intent.duration_hours_max} 小时\n"
         f"出行方式：{intent.travel_mode}\n"
         f"最大距离：{intent.max_distance_km}km\n"

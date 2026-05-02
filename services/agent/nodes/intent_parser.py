@@ -25,7 +25,7 @@ from app.schemas.planning import (
 )
 from agent.nodes.base import BaseNode
 from agent.state.types import PlanningState, TraceEvent
-from llm.base import LLMClient, LLMMessage
+from llm.base import LLMClient, LLMError, LLMMessage
 from llm.structured_output import LLMParseError, append_json_instruction, parse_json_response
 
 logger = logging.getLogger(__name__)
@@ -126,6 +126,15 @@ class IntentParserNode(BaseNode):
 
         try:
             raw_data = self._call_llm(state.raw_input)
+        except LLMError as exc:
+            logger.warning("intent_parser: LLM 调用失败: %s", exc)
+            state.trace.append(TraceEvent(
+                agent=self.name,
+                status="error",
+                message=f"LLM 调用失败: {exc}",
+            ))
+            # LLM 调用失败等同于所有槽位缺失，走默认值路径
+            raw_data = _empty_raw_data()
         except LLMParseError as exc:
             logger.warning("intent_parser: LLM 响应解析失败: %s", exc)
             state.trace.append(TraceEvent(
@@ -283,7 +292,7 @@ def _detect_scenario(participants: list[ParticipantSchema]):
 
     if has_child:
         return "family_weight_loss_child5"
-    if total_adults >= 3:
+    if total_adults >= 4:
         return "friends_4_mixed_gender"
     return "family_weight_loss_child5"
 

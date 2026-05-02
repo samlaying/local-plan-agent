@@ -52,8 +52,8 @@ class RetrievalNode(BaseNode):
 
     @staticmethod
     def _default_routes_path() -> Path:
-        # services/agent/nodes/retrieval_node.py → 上 4 级到项目根
-        return Path(__file__).resolve().parents[4] / "data" / "mock" / "routes.json"
+        # services/agent/nodes/retrieval_node.py → 上 3 级到项目根
+        return Path(__file__).resolve().parents[3] / "data" / "mock" / "routes.json"
 
     # ------------------------------------------------------------------
     # BaseNode.run

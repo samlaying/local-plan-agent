@@ -119,6 +119,68 @@
 
 ---
 
+---
+
+## Code Review — Phase 2 节点（2026-05-02）
+
+### IntentParserNode
+
+- **问题**: `_call_llm` 调用 `self._llm.chat()` 时，`chat()` 可能抛出 `LLMError`（网络失败、API 限流等），但 `run()` 方法只捕获 `LLMParseError`，`LLMError` 未导入也未被捕获。该异常会向上传播，导致节点崩溃，且不会写入 error TraceEvent，调用方无法区分节点失败和意图解析失败。
+  **位置**: `services/agent/nodes/intent_parser.py`，`run()` 的 try/except 块，以及 import 列表
+  **严重性**: 高
+  **建议**: 在 import 中加入 `LLMError`，在 `run()` 的 try 块中同时捕获 `LLMError`，写入 error TraceEvent 后用 `_empty_raw_data()` 降级，与 `LLMParseError` 处理路径一致。
+
+- **问题**: `_detect_scenario` 判断阈值与场景语义不符。注释说"有 4 个以上 adult 且无 child → friends_4_mixed_gender"，但代码条件是 `total_adults >= 3`，即 3 名成年人（如夫妻+朋友）也会被归为"4人朋友团"场景，造成 POI 过滤策略错误。
+  **位置**: `services/agent/nodes/intent_parser.py`，`_detect_scenario()` 函数
+  **严重性**: 中
+  **建议**: 将阈值改为 `total_adults >= 4`，与场景名称和 mock 数据中的参与人设定对齐。
+
+- **问题**: `_call_llm` 是同步方法，在 `async def run()` 里直接调用（无 `await`），会阻塞事件循环。`self._llm.chat()` 是同步 HTTP 调用（`LLMClient` 协议定义为同步 `def chat()`），如果用真实 OpenAI 客户端，这个调用会在 asyncio 事件循环中阻塞。
+  **位置**: `services/agent/nodes/intent_parser.py`，`run()` 第 128 行；`planning_node.py` 第 299 行同理
+  **严重性**: 中
+  **建议**: 用 `asyncio.get_running_loop().run_in_executor(None, self._call_llm, state.raw_input)` 将同步 LLM 调用放入线程池，或将 `LLMClient.chat` 改为 `async def`。
+
+### RetrievalNode
+
+- **问题**: `_default_routes_path()` 使用 `Path(__file__).resolve().parents[4]` 计算项目根目录，但从文件实际路径（`services/agent/nodes/retrieval_node.py`）向上数 4 层到达的是项目根目录的父目录（`Documents/`），而非项目根目录本身。正确深度应为 `parents[3]`。导致默认路径为 `…/Documents/data/mock/routes.json`，文件不存在，每次运行都会触发 `FileNotFoundError` 并静默降级为空路由。
+  **位置**: `services/agent/nodes/retrieval_node.py`，`_default_routes_path()` 静态方法
+  **严重性**: 高
+  **建议**: 将 `parents[4]` 改为 `parents[3]`。可参照 `mock_poi_repository.py` 的 `_resolve_data_dir` — 同样从 `services/api/app/repositories/` 深度 4 级文件用 `parents[4]`，而 `retrieval_node.py` 深度只有 3 级。
+
+- **问题**: `_fetch_activities`、`_fetch_restaurants`、`_fetch_routes` 都是 `async def`，但内部调用的 `self._repository.list_activities()`、`list_restaurants()`、`list_all()` 以及 `self._routes_path.open()` 都是同步阻塞 IO（读 JSON 文件）。这些协程被包裹在 `asyncio.create_task` 并行执行，但同步 IO 会阻塞事件循环，实际上并不并发。
+  **位置**: `services/agent/nodes/retrieval_node.py`，`_fetch_activities` / `_fetch_restaurants` / `_fetch_routes`
+  **严重性**: 中
+  **建议**: 将同步 IO 操作包裹在 `asyncio.get_running_loop().run_in_executor(None, ...)` 中，或使用 `aiofiles` 读文件。在 mock 数据阶段文件很小影响不大，但在真实 IO（数据库、HTTP API）场景下必须修复。
+
+- **问题**: `_check_business_hours` 返回三元组 `(open_activities, open_restaurants, rejected)`，rejected 列表收集了被排除的 POI 信息，但 `RetrievalResult` 没有 `rejected` 字段，该信息只用于 trace 消息统计后被丢弃，无法被 VerifierNode 或 Orchestrator 获取。
+  **位置**: `services/agent/nodes/retrieval_node.py`，`run()` 中对 `_check_business_hours` 返回值的处理
+  **严重性**: 低
+  **建议**: 在 `RetrievalResult` 中增加 `rejected: list[dict]` 字段，或在 `route_info` 中携带。当前不影响功能，但 VerifierNode 若想向 PlanningNode 说明哪些 POI 已被提前排除，此信息丢失会导致 LLM 可能重新选择已被排除的 POI。
+
+### PlanningNode
+
+- **问题**: `run()` 在调用 `_generate_with_llm` 时传入 `state.verifier_rejection_reason`（单数），但 `PlanningState` 中实际字段名为 `verifier_rejection_reasons`（复数，`list[dict]`）。这是一个 `AttributeError`，运行时会崩溃。同时，两者类型也不匹配：节点内部签名期望 `str | None`，state 字段是 `list[dict]`。
+  **位置**: `services/agent/nodes/planning_node.py`，`run()` 第 256 行；类文档字符串第 220 行也有同名错误
+  **严重性**: 高
+  **建议**: 将 `state.verifier_rejection_reason` 改为读取 `state.verifier_rejection_reasons`，并将其序列化为字符串（如 `json.dumps(state.verifier_rejection_reasons, ensure_ascii=False)`）再传入 `_generate_with_llm`，或修改函数签名接受 `list[dict]`。
+
+- **问题**: `_build_user_message` 将 `intent.time_window.start` 和 `intent.time_window.end` 直接插入 f-string，这两个字段类型为 `str | None`。当时间窗口缺失时（如用户未提供且 IntentParser 未填默认），prompt 中会出现 `"None–None"`，干扰 LLM 生成质量。
+  **位置**: `services/agent/nodes/planning_node.py`，`_build_user_message()` 函数
+  **严重性**: 低
+  **建议**: 用 `intent.time_window.start or "待定"` 和 `intent.time_window.end or "待定"` 代替裸字段引用。
+
+### VerifierNode
+
+- **问题**: 当部分（非全部）方案校验失败时，VerifierNode 记录拒绝原因并增加 `plan_revision_count`，但不从 `state.candidate_plans` 中移除不合格的方案。如果 Orchestrator 在 Verifier 之后不再循环回 PlanningNode（例如达到回环上限或直接进入方案选择），用户可能会看到已知违规的方案。
+  **位置**: `services/agent/nodes/verifier_node.py`，`run()` 中 `rejection_batch` 处理部分
+  **严重性**: 中
+  **建议**: 若不触发重生成，至少过滤掉 `state.candidate_plans` 中存在 violations 的方案；或在 Orchestrator 层明确控制"达到上限后过滤违规方案再呈现"。
+
+- **问题**: VerifierNode 的回环上限（"最多重生成 2 次"）在注释和 PlanningState 的 `plan_revision_count` 字段注释中均有提及，但实际 MAX 值没有定义为常量，也没有任何节点或 Orchestrator 检查 `plan_revision_count` 是否达到上限。如果 Orchestrator 在未来接入这两个节点并实现回环，但未加上限检查，会导致无限 Planning → Verifier → Planning 循环。
+  **位置**: `services/agent/state/types.py` `plan_revision_count` 字段；缺少对应的 `MAX_PLAN_REVISION_COUNT` 常量
+  **严重性**: 中
+  **建议**: 在 `state/types.py` 或独立常量文件中定义 `MAX_PLAN_REVISION_COUNT = 2`，Orchestrator 在调度回环前检查该值。VerifierNode 本身也可以在 `run()` 中检查并在 trace 中提示已达上限。
+
 ## [2026-05-02] ExecutionConfirmPanel 确认按钮 disabled 逻辑有歧义
 
 **位置**: `apps/web/src/components/planner/ExecutionConfirmPanel.tsx`

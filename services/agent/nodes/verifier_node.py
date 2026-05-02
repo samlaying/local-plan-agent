@@ -9,8 +9,10 @@ VerifierNode — 规则校验已生成的候选方案，决定是否通过。
 
 输出行为：
   - 全部通过：state.verifier_rejection_reasons 保持不变，返回 state
-  - 有问题：记录每个失败方案的拒绝原因，state.plan_revision_count += 1，
-            state.verifier_rejection_reasons 追加本次结果（供 Planning Node 参考）
+  - 有问题：记录每个失败方案的拒绝原因，将失败方案从 state.candidate_plans 过滤掉，
+            state.plan_revision_count += 1，state.verifier_rejection_reasons 追加本次结果
+            （供 Planning Node 参考）。若所有方案均失败，candidate_plans 变为空列表，
+            Orchestrator 检测到 plan_revision_count 增加后可触发 Planning Node 重新生成。
 
 复用策略：
   直接从 activity_workflow 模块 import _matches_audience、_is_open_for_window，
@@ -38,8 +40,10 @@ logger = logging.getLogger(__name__)
 class VerifierNode(BaseNode):
     """规则校验节点：校验 state.candidate_plans 中每个方案是否满足约束。
 
-    全部通过则不修改 plan_revision_count；有失败则 plan_revision_count += 1，
-    并将拒绝原因写入 state.verifier_rejection_reasons 以便 Planning Node 重试。
+    全部通过则不修改 plan_revision_count；有失败则：
+      1. 把失败方案从 state.candidate_plans 中过滤掉，只保留通过的方案
+      2. plan_revision_count += 1
+      3. 将拒绝原因写入 state.verifier_rejection_reasons 以便 Planning Node 重试
     """
 
     async def run(self, state: PlanningState) -> PlanningState:
@@ -79,25 +83,27 @@ class VerifierNode(BaseNode):
                 })
 
         if rejection_batch:
+            failed_ids = {r["plan_id"] for r in rejection_batch}
+            state.candidate_plans = [p for p in state.candidate_plans if p.id not in failed_ids]
+
             state.plan_revision_count += 1
             state.verifier_rejection_reasons.extend(rejection_batch)
 
-            failed_ids = [r["plan_id"] for r in rejection_batch]
             state.trace.append(TraceEvent(
                 agent=self.name,
                 status="done",
                 message=(
-                    f"校验未通过：{len(rejection_batch)}/{len(state.candidate_plans)} 个方案有违规，"
-                    f"plan_ids={failed_ids}，revision_count={state.plan_revision_count}"
+                    f"校验未通过：{len(rejection_batch)} 个方案有违规已移除，"
+                    f"剩余 {len(state.candidate_plans)} 个方案，"
+                    f"plan_ids={sorted(failed_ids)}，revision_count={state.plan_revision_count}"
                 ),
             ))
             logger.warning(
-                "[%s] %d/%d plans failed verification (revision_count=%d): %s",
+                "[%s] %d plans failed verification and were removed (revision_count=%d): %s",
                 self.name,
                 len(rejection_batch),
-                len(state.candidate_plans),
                 state.plan_revision_count,
-                failed_ids,
+                sorted(failed_ids),
             )
         else:
             state.trace.append(TraceEvent(
