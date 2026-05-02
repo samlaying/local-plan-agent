@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
@@ -145,3 +146,11 @@ class PlanSchema(BaseModel):
     actions: list[ActionSchema] = Field(default_factory=list)
     fit_summary: list[str] = Field(default_factory=list)
     tradeoffs: list[str] = Field(default_factory=list)
+
+
+class UserProfileSchema(BaseModel):
+    session_id: str
+    preference_weights: dict[str, float] = Field(default_factory=dict)
+    selected_poi_ids: list[str] = Field(default_factory=list)
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
