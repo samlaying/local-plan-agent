@@ -1,3 +1,4 @@
-from agent.nodes.base import BaseNode
+from .base import BaseNode
+from .intent_parser import IntentParserNode
 
-__all__ = ["BaseNode"]
+__all__ = ["BaseNode", "IntentParserNode"]
