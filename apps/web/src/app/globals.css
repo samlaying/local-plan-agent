@@ -2,7 +2,204 @@
 @tailwind components;
 @tailwind utilities;
 
-html,
-body {
-  min-height: 100%;
+@layer base {
+  :root {
+    /* Design System Color Palette - 纸感温暖系统 */
+    --paper-bg: #F8F1E7;        /* 纸感米白背景 */
+    --card-bg: #FFFDF8;          /* 卡片底色 */
+    --card-soft: #FBF6EC;        /* 柔和卡片背景 */
+    --clay-orange: #D97745;      /* 陶土橙主色 */
+    --clay-orange-dark: #C95F2E; /* 深陶土橙 */
+    --pine-green: #4F6F52;       /* 松木绿辅助色 */
+    --pine-green-soft: #E8EFE4;  /* 浅松木绿 */
+    --ink: #2B2118;              /* 深棕色文本 */
+    --muted: #8A7A68;           /* 柔和灰 */
+    --line: #E8DCCB;            /* 分割线色 */
+    --success: #6A994E;         /* 成功色 */
+    --warning: #C0842D;         /* 警告色 */
+    --danger: #C75C48;          /* 危险色 */
+  }
+
+  /* 高端字体系统 - 符合 taste-skill 禁止 Inter 的规则 */
+  * {
+    @apply border-[line];
+  }
+
+  html {
+    @apply scroll-smooth;
+  }
+
+  body {
+    @apply min-h-screen;
+    @apply bg-[paper-bg];
+    @apply text-[ink];
+    font-family: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans SC", sans-serif;
+    line-height: 1.7;
+    letter-spacing: -0.01em;
+
+    /* 极轻微纸纹效果 - 符合 taste-skill 性能要求 */
+    background-image:
+      radial-gradient(rgba(43, 33, 24, 0.03) 0.5px, transparent 0.5px);
+    background-size: 18px 18px;
+  }
+
+  /* Typography System - 高端字体层次 */
+  h1, h2, h3, h4, h5, h6 {
+    @apply font-bold;
+    @apply tracking-tight;
+    letter-spacing: -0.02em;
+    line-height: 1.2;
+  }
+
+  h1 {
+    @apply text-4xl md:text-5xl lg:text-6xl;
+  }
+
+  h2 {
+    @apply text-3xl md:text-4xl;
+  }
+
+  h3 {
+    @apply text-2xl md:text-3xl;
+  }
+
+  p {
+    @apply leading-relaxed;
+    max-width: 65ch;
+  }
+}
+
+@layer components {
+  /* 纸感卡片系统 - 符合 taste-skill 高端设计要求 */
+  .card-paper {
+    @apply bg-[card-bg];
+    @apply border border-[line];
+    @apply rounded-3xl;
+    box-shadow: 0 12px 30px rgba(43, 33, 24, 0.06);
+    transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
+  .card-paper:hover {
+    transform: translateY(-3px);
+    box-shadow: 0 18px 40px rgba(43, 33, 24, 0.10);
+  }
+
+  /* 主按钮系统 - 陶土橙渐变，圆角设计 */
+  .btn-primary {
+    @apply bg-gradient-to-br from-[clay-orange] to-[clay-orange-dark];
+    @apply text-white;
+    @apply font-semibold;
+    @apply rounded-full;
+    @apply h-11;
+    @apply px-6;
+    @apply transition-all;
+    @apply duration-300;
+    box-shadow: 0 4px 14px rgba(217, 119, 69, 0.3);
+  }
+
+  .btn-primary:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 6px 20px rgba(217, 119, 69, 0.4);
+  }
+
+  .btn-primary:active {
+    transform: scale(0.98);
+  }
+
+  /* 次按钮系统 */
+  .btn-secondary {
+    @apply bg-[card-bg];
+    @apply text-[clay-orange];
+    @apply border border-[clay-orange];
+    @apply font-semibold;
+    @apply rounded-full;
+    @apply h-11;
+    @apply px-6;
+    @apply transition-all;
+    @apply duration-300;
+  }
+
+  .btn-secondary:hover {
+    @apply bg-[clay-orange];
+    @apply text-white;
+  }
+
+  /* 幽灵按钮 */
+  .btn-ghost {
+    @apply bg-transparent;
+    @apply text-[muted];
+    @apply transition-all;
+    @apply duration-300;
+  }
+
+  .btn-ghost:hover {
+    @apply text-[ink];
+  }
+
+  /* Chip 标签系统 */
+  .chip {
+    @apply bg-[card-soft];
+    @apply border border-[line];
+    @apply text-[muted];
+    @apply rounded-full;
+    @apply px-3;
+    @apply py-1.5;
+    @apply text-xs;
+    @apply font-medium;
+    @apply transition-all;
+    @apply duration-200;
+  }
+
+  .chip.selected {
+    @apply bg-[pine-green-soft];
+    @apply text-[pine-green];
+    @apply border-[pine-green];
+  }
+
+  /* 禁用状态 */
+  .disabled {
+    @apply opacity-45;
+    @apply cursor-not-allowed;
+    @apply pointer-events-none;
+  }
+}
+
+/* Loading 动画系统 - 符合 taste-skill 性能要求 */
+@keyframes shimmer {
+  0% {
+    background-position: -1000px 0;
+  }
+  100% {
+    background-position: 1000px 0;
+  }
+}
+
+.skeleton {
+  background: linear-gradient(
+    90deg,
+    #FFFDF8 0%,
+    #FBF6EC 50%,
+    #FFFDF8 100%
+  );
+  background-size: 1000px 100%;
+  animation: shimmer 2s infinite linear;
+}
+
+/* 高端滚动条样式 */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #E8DCCB;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #D97745;
 }

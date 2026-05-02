@@ -153,3 +153,43 @@ export interface ItineraryPlan {
   fitSummary: string[];
   tradeoffs: string[];
 }
+
+// 协作地图相关类型
+export interface TripMapSnapshot {
+  id: string;
+  trip_map_id: string;
+  plan_id: string;
+  title: string;
+  description: string;
+  created_at: string;
+  updated_at: string;
+  stops: TripMapStop[];
+  route_segments: RouteSegment[];
+  total_distance_meters: number;
+  estimated_duration_minutes: number;
+  metadata: Record<string, unknown>;
+}
+
+export interface TripMapStop {
+  id: string;
+  trip_map_id: string;
+  sequence_order: number;
+  poi_id: string;
+  type: "origin" | "activity" | "meal" | "rest" | "destination";
+  status: "pending" | "in_progress" | "completed";
+  planned_arrival_time: string;
+  planned_departure_time: string;
+  notes: string;
+  created_at: string;
+}
+
+export interface RouteSegment {
+  id: string;
+  trip_map_id: string;
+  from_stop_id: string;
+  to_stop_id: string;
+  travel_mode: TravelMode;
+  distance_meters: number;
+  estimated_duration_minutes: number;
+  route_geometry: string;
+}

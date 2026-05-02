@@ -6,7 +6,11 @@
       "mcp__better-icons__sync_icon",
       "Bash(git config *)",
       "Bash(git add *)",
-      "Bash(git commit *)"
+      "Bash(git commit *)",
+      "Bash(npx skills *)",
+      "Bash(npm install *)",
+      "Bash(npm run *)",
+      "Bash(start *)"
     ]
   }
 }
