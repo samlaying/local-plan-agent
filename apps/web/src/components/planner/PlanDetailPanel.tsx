@@ -7,10 +7,14 @@ import { cn } from '@/lib/utils';
 import { ItineraryTimeline } from './ItineraryTimeline';
 import { MockRouteMap } from '../map/MockRouteMap';
 
+type RejectStep = 'idle' | 'input';
+
 type TabType = 'overview' | 'map' | 'timeline' | 'reasons';
 
 export const PlanDetailPanel: React.FC = () => {
-  const { selectedPlan, transitionTo, activeTab, setActiveTab } = useWorkbench();
+  const { selectedPlan, transitionTo, activeTab, setActiveTab, rejectPlan } = useWorkbench();
+  const [rejectStep, setRejectStep] = useState<RejectStep>('idle');
+  const [rejectFeedback, setRejectFeedback] = useState('');
 
   if (!selectedPlan) {
     return (
@@ -226,32 +230,75 @@ export const PlanDetailPanel: React.FC = () => {
 
       {/* 底部操作栏 */}
       <div className="card-paper p-6">
-        <div className="flex flex-wrap gap-3 justify-center">
-          <Button
-            variant="ghost"
-            onClick={() => transitionTo('plan_select')}
-          >
-            重新选方案
-          </Button>
-          <Button
-            variant="secondary"
-            onClick={() => transitionTo('plan_select')}
-          >
-            调整行程
-          </Button>
-          <Button
-            variant="primary"
-            onClick={() => transitionTo('sharing')}
-          >
-            分享同行
-          </Button>
-          <Button
-            variant="secondary"
-            onClick={() => transitionTo('execution_confirm')}
-          >
-            确认出发
-          </Button>
-        </div>
+        {rejectStep === 'idle' ? (
+          <div className="flex flex-wrap gap-3 justify-center">
+            <Button
+              variant="ghost"
+              onClick={() => transitionTo('plan_select')}
+            >
+              重新选方案
+            </Button>
+            <Button
+              variant="ghost"
+              onClick={() => setRejectStep('input')}
+            >
+              不喜欢，重新规划
+            </Button>
+            <Button
+              variant="secondary"
+              onClick={() => transitionTo('plan_select')}
+            >
+              调整行程
+            </Button>
+            <Button
+              variant="primary"
+              onClick={() => transitionTo('sharing')}
+            >
+              分享同行
+            </Button>
+            <Button
+              variant="secondary"
+              onClick={() => transitionTo('execution_confirm')}
+            >
+              确认出发
+            </Button>
+          </div>
+        ) : (
+          <div>
+            <h3 className="text-base font-bold text-ink mb-1">告诉我你想要什么方向（可选）</h3>
+            <p className="text-sm text-muted mb-3">不填也可以直接提交，Agent 会重新规划</p>
+            <textarea
+              value={rejectFeedback}
+              onChange={(e) => setRejectFeedback(e.target.value)}
+              placeholder="例如：换个户外活动的、近一点的、预算再低一些…"
+              rows={2}
+              className="w-full bg-card-bg border border-line rounded-xl px-4 py-3 text-sm text-ink placeholder:text-muted resize-none focus:outline-none focus:border-clay-orange mb-3"
+            />
+            <div className="flex gap-3 justify-end">
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  setRejectStep('idle');
+                  setRejectFeedback('');
+                }}
+              >
+                取消
+              </Button>
+              <Button
+                variant="primary"
+                size="sm"
+                onClick={() => {
+                  rejectPlan(rejectFeedback.trim());
+                  setRejectStep('idle');
+                  setRejectFeedback('');
+                }}
+              >
+                重新规划
+              </Button>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

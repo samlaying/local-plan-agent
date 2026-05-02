@@ -2,6 +2,7 @@ export { GoalInputCard } from './GoalInputCard';
 export type { InputBoxState } from './GoalInputCard';
 
 export { AgentTracePanel } from './AgentTracePanel';
+export { AskReplyPanel } from './AskReplyPanel';
 
 export { PlanCard } from './PlanCard';
 export type { PlanCardState } from './PlanCard';

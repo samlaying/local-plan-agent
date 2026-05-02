@@ -1,7 +1,7 @@
 'use client';
 
 import { useWorkbench } from '@/features/planner/contexts/WorkbenchContext';
-import { GoalInputCard, AgentTracePanel, PlanCompareGrid, PlanDetailPanel, ExecutionConfirmPanel, ExecutionDonePanel } from '@/components/planner';
+import { GoalInputCard, AgentTracePanel, AskReplyPanel, PlanCompareGrid, PlanDetailPanel, ExecutionConfirmPanel, ExecutionDonePanel } from '@/components/planner';
 import { ShareLinkCard, MemberList, CommentList, CommentComposer, VotePanel } from '@/components/collaboration';
 
 export default function HomePage() {
@@ -25,6 +25,9 @@ export default function HomePage() {
 
       case 'generating':
         return <AgentTracePanel />;
+
+      case 'asking':
+        return <AskReplyPanel />;
 
       case 'plan_select':
         return <PlanCompareGrid />;

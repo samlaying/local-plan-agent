@@ -9,6 +9,7 @@ import { wsClient } from '@/lib/ws-client';
 export type WorkbenchState =
   | 'input'
   | 'generating'
+  | 'asking'
   | 'plan_select'
   | 'plan_detail'
   | 'sharing'
@@ -18,9 +19,10 @@ export type WorkbenchState =
 // 状态流转规则
 const STATE_TRANSITIONS: Record<WorkbenchState, WorkbenchState[]> = {
   input: ['generating'],
-  generating: ['plan_select', 'input'],
-  plan_select: ['plan_detail', 'input'],
-  plan_detail: ['sharing', 'plan_select'],
+  generating: ['plan_select', 'asking', 'input'],
+  asking: ['generating', 'input'],
+  plan_select: ['plan_detail', 'generating', 'input'],
+  plan_detail: ['sharing', 'plan_select', 'generating'],
   sharing: ['execution_confirm', 'plan_detail'],
   execution_confirm: ['execution_done', 'sharing'],
   execution_done: ['input'],
@@ -75,7 +77,7 @@ interface WorkbenchContextType {
   startPlanning: (query: string, location: { city: string; address: string; lat: number; lng: number }) => void;
   sendUserReply: (text: string) => void;
   confirmPlan: (planId: string) => void;
-  rejectPlan: (feedback: string) => void;
+  rejectPlan: (feedback?: string) => void;
   confirmExecution: (planId: string) => void;
   cancelPlanning: () => void;
 }
@@ -185,10 +187,15 @@ export const WorkbenchProvider: React.FC<WorkbenchProviderProps> = ({ children }
 
       onAsk: (data) => {
         setAskQuestion(data);
+        // Transition to asking state so the page renders the dedicated ask UI
+        if (STATE_TRANSITIONS[currentStateRef.current].includes('asking')) {
+          setCurrentState('asking');
+        }
       },
 
       onPlansReady: ({ plans: incoming }) => {
         setPlans(incoming);
+        setAskQuestion(null);
         // Transition to plan_select — ref-based check avoids stale closure
         if (STATE_TRANSITIONS[currentStateRef.current].includes('plan_select')) {
           setCurrentState('plan_select');
@@ -261,6 +268,10 @@ export const WorkbenchProvider: React.FC<WorkbenchProviderProps> = ({ children }
 
   const sendUserReply = useCallback((text: string) => {
     setAskQuestion(null);
+    // Transition back to generating so the trace panel shows while backend continues
+    if (STATE_TRANSITIONS[currentStateRef.current].includes('generating')) {
+      setCurrentState('generating');
+    }
     wsClient.send({ type: 'user_reply', payload: { text } });
   }, []);
 
@@ -268,8 +279,15 @@ export const WorkbenchProvider: React.FC<WorkbenchProviderProps> = ({ children }
     wsClient.send({ type: 'plan_confirmed', payload: { plan_id: planId } });
   }, []);
 
-  const rejectPlan = useCallback((feedback: string) => {
-    wsClient.send({ type: 'plan_rejected', payload: { feedback } });
+  const rejectPlan = useCallback((feedback?: string) => {
+    setPlans([]);
+    setSelectedPlan(null);
+    setIsLoading(true);
+    // Transition to generating so the trace panel shows while backend re-plans
+    if (STATE_TRANSITIONS[currentStateRef.current].includes('generating')) {
+      setCurrentState('generating');
+    }
+    wsClient.send({ type: 'plan_rejected', payload: { feedback: feedback ?? '' } });
   }, []);
 
   const confirmExecution = useCallback((planId: string) => {
@@ -349,6 +367,11 @@ export const getStateInfo = (state: WorkbenchState) => {
     generating: {
       title: '生成路线',
       description: 'Agent 正在理解你的偏好',
+      stepNumber: 2,
+    },
+    asking: {
+      title: '补充信息',
+      description: 'Agent 需要了解更多',
       stepNumber: 2,
     },
     plan_select: {
