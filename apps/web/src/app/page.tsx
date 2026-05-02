@@ -3,40 +3,18 @@
 import { useWorkbench } from '@/features/planner/contexts/WorkbenchContext';
 import { GoalInputCard, AgentTracePanel, PlanCompareGrid, PlanDetailPanel, ExecutionConfirmPanel, ExecutionDonePanel } from '@/components/planner';
 import { ShareLinkCard, MemberList, CommentList, CommentComposer, VotePanel } from '@/components/collaboration';
-import { generatePlansPreview } from '@/lib/api';
 
 export default function HomePage() {
-  const { currentState, transitionTo, setPlans, setIsLoading, setError } = useWorkbench();
+  const { currentState, startPlanning } = useWorkbench();
 
-  // 处理需求提交
+  // 处理需求提交 — 通过 WebSocket 发起规划
   const handleIntentSubmit = async (intent: string) => {
-    try {
-      setIsLoading(true);
-      setError(null);
-
-      // 调用 API 生成计划
-      const response: any = await generatePlansPreview({
-        query: intent,
-        location: {
-          city: 'Shanghai',
-          address: '徐家汇',
-          lat: 31.2304,
-          lng: 121.4737,
-        },
-      });
-
-      // 更新计划数据
-      setPlans(response.plans || []);
-
-      // 转换到选择方案状态
-      transitionTo('plan_select');
-    } catch (error) {
-      console.error('Failed to generate plans:', error);
-      setError(error instanceof Error ? error.message : '生成计划失败，请重试。');
-      throw error;
-    } finally {
-      setIsLoading(false);
-    }
+    startPlanning(intent, {
+      city: 'Shanghai',
+      address: '徐家汇',
+      lat: 31.2304,
+      lng: 121.4737,
+    });
   };
 
   // 根据当前状态渲染不同内容

@@ -1,75 +1,39 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useRef, useEffect, useState } from 'react';
 import { useWorkbench } from '@/features/planner/contexts/WorkbenchContext';
 import { CheckCircleIcon, ClockIcon } from '../icons';
 import { cn } from '@/lib/utils';
 
-// Agent 处理步骤
-interface AgentStep {
-  id: string;
-  label: string;
-  status: 'pending' | 'processing' | 'completed';
-  duration?: number;
-}
-
-const AGENT_STEPS: AgentStep[] = [
-  { id: 'parse_intent', label: '理解你的出行需求', status: 'pending' },
-  { id: 'search_candidates', label: '搜索附近合适地点', status: 'pending' },
-  { id: 'check_constraints', label: '检查距离、营业和适合度', status: 'pending' },
-  { id: 'generate_plans', label: '生成半日路线方案', status: 'pending' },
-  { id: 'critique_plans', label: '检查排队和路线风险', status: 'pending' },
-  { id: 'generate_actions', label: '准备可执行操作', status: 'pending' },
-  { id: 'present_result', label: '整理成今日三条路', status: 'pending' },
-];
-
 export const AgentTracePanel: React.FC = () => {
-  const { userIntent } = useWorkbench();
-  const [steps, setSteps] = useState<AgentStep[]>(AGENT_STEPS);
+  const {
+    userIntent,
+    traceEvents,
+    askQuestion,
+    sendUserReply,
+  } = useWorkbench();
 
-  // 模拟 Agent 处理过程
+  const [replyText, setReplyText] = useState('');
+  const bottomRef = useRef<HTMLDivElement | null>(null);
+
+  // Auto-scroll trace list when new events arrive
   useEffect(() => {
-    let currentStep = 0;
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [traceEvents]);
 
-    const processSteps = setInterval(() => {
-      if (currentStep >= steps.length) {
-        clearInterval(processSteps);
-        return;
-      }
+  const handleSendReply = () => {
+    const trimmed = replyText.trim();
+    if (!trimmed) return;
+    sendUserReply(trimmed);
+    setReplyText('');
+  };
 
-      setSteps(prevSteps =>
-        prevSteps.map((step, index) =>
-          index === currentStep
-            ? { ...step, status: 'processing' }
-            : index < currentStep
-            ? { ...step, status: 'completed' }
-            : step
-        )
-      );
-
-      // 完成当前步骤
-      setTimeout(() => {
-        setSteps(prevSteps =>
-          prevSteps.map((step, index) =>
-            index === currentStep ? { ...step, status: 'completed' } : step
-          )
-        );
-        currentStep++;
-      }, 1500);
-    }, 2000);
-
-    return () => clearInterval(processSteps);
-  }, []);
-
-  // 提取的偏好关键词（示例）
-  const preferenceTags = [
-    { label: '亲子', checked: true },
-    { label: '半日', checked: true },
-    { label: '离家近', checked: true },
-    { label: '轻松散步', checked: true },
-    { label: '可拍照', checked: true },
-    { label: '不太累', checked: true },
-  ];
+  const handleReplyKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      handleSendReply();
+    }
+  };
 
   return (
     <div className="max-w-4xl mx-auto">
@@ -77,95 +41,105 @@ export const AgentTracePanel: React.FC = () => {
       <div className="card-paper p-6 mb-6">
         <div className="flex items-center justify-between mb-4">
           <h3 className="text-lg font-bold text-ink">你的需求</h3>
-          <button className="text-sm text-clay-orange hover:underline">
-            修改
-          </button>
         </div>
         <p className="text-ink mb-4">{userIntent || '今天下午想和老婆孩子出去玩几个小时，别离家太远'}</p>
-        <div className="flex flex-wrap gap-2">
-          <span className="chip selected">周末下午</span>
-          <span className="chip selected">轻松散步</span>
-          <span className="chip selected">可拍照</span>
-          <span className="chip selected">不太累</span>
-        </div>
       </div>
 
-      {/* Agent 理解中 */}
+      {/* Agent 处理追踪 */}
       <div className="card-paper p-6 mb-6">
         <h3 className="text-lg font-bold text-ink mb-2">Agent 理解中</h3>
         <p className="text-muted mb-4">正在理解你的偏好，马上为你生成路线</p>
 
-        {/* 提取的偏好关键词 */}
-        <div className="mb-6">
-          <p className="text-sm text-muted mb-3">提取的偏好关键词：</p>
-          <div className="flex flex-wrap gap-2">
-            {preferenceTags.map((tag, index) => (
-              <div
-                key={index}
-                className={cn(
-                  'flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm font-medium transition-all duration-200',
-                  tag.checked
-                    ? 'bg-pine-green-soft text-pine-green border border-pine-green'
-                    : 'bg-card-soft text-muted border border-line'
-                )}
-              >
-                {tag.checked && <CheckCircleIcon className="w-3 h-3" />}
-                {tag.label}
-              </div>
-            ))}
-          </div>
-        </div>
+        {/* Trace 事件列表 */}
+        <div className="space-y-3 max-h-64 overflow-y-auto pr-1">
+          {traceEvents.length === 0 && (
+            <div className="flex items-center gap-2 text-sm text-muted">
+              <div className="w-1.5 h-1.5 rounded-full bg-clay-orange animate-pulse" />
+              <div className="w-1.5 h-1.5 rounded-full bg-clay-orange animate-pulse" style={{ animationDelay: '150ms' }} />
+              <div className="w-1.5 h-1.5 rounded-full bg-clay-orange animate-pulse" style={{ animationDelay: '300ms' }} />
+              <span>等待 Agent 响应…</span>
+            </div>
+          )}
 
-        {/* 处理步骤 */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          {steps.map((step, index) => {
-            const Icon = step.status === 'completed' ? CheckCircleIcon : ClockIcon;
+          {traceEvents.map((event, index) => {
+            const isLast = index === traceEvents.length - 1;
+            const isRunning = event.status === 'running';
+            const isDone = event.status === 'completed';
+            const isFailed = event.status === 'failed';
+
+            const Icon = isDone ? CheckCircleIcon : ClockIcon;
 
             return (
               <div
-                key={step.id}
+                key={index}
                 className={cn(
                   'card-paper p-4 transition-all duration-200',
-                  step.status === 'processing' && 'border-clay-orange shadow-clay',
-                  step.status === 'completed' && 'border-pine-green'
+                  isRunning && 'border-clay-orange shadow-clay',
+                  isDone && 'border-pine-green',
+                  isFailed && 'border-danger'
                 )}
               >
-                <div className="flex items-center gap-2 mb-2">
+                <div className="flex items-center gap-2 mb-1">
                   <Icon
                     className={cn(
-                      'w-4 h-4',
-                      step.status === 'processing' && 'text-clay-orange animate-pulse',
-                      step.status === 'completed' && 'text-pine-green',
-                      step.status === 'pending' && 'text-muted'
+                      'w-4 h-4 flex-shrink-0',
+                      isRunning && 'text-clay-orange animate-pulse',
+                      isDone && 'text-pine-green',
+                      isFailed && 'text-danger',
+                      !isRunning && !isDone && !isFailed && 'text-muted'
                     )}
                   />
-                  <span className="text-sm font-medium text-ink">{step.label}</span>
+                  <span className="text-sm font-medium text-ink">{event.agent}</span>
                 </div>
+                <p className="text-xs text-muted pl-6">{event.message}</p>
 
-                {/* 状态指示 */}
-                {step.status === 'processing' && (
-                  <div className="flex items-center gap-1">
-                    <div className="w-1.5 h-1.5 rounded-full bg-clay-orange animate-pulse"></div>
-                    <div className="w-1.5 h-1.5 rounded-full bg-clay-orange animate-pulse" style={{ animationDelay: '150ms' }}></div>
-                    <div className="w-1.5 h-1.5 rounded-full bg-clay-orange animate-pulse" style={{ animationDelay: '300ms' }}></div>
+                {isRunning && isLast && (
+                  <div className="flex items-center gap-1 pl-6 mt-2">
+                    <div className="w-1.5 h-1.5 rounded-full bg-clay-orange animate-pulse" />
+                    <div className="w-1.5 h-1.5 rounded-full bg-clay-orange animate-pulse" style={{ animationDelay: '150ms' }} />
+                    <div className="w-1.5 h-1.5 rounded-full bg-clay-orange animate-pulse" style={{ animationDelay: '300ms' }} />
                   </div>
-                )}
-
-                {step.status === 'completed' && (
-                  <div className="text-xs text-pine-green">完成</div>
                 )}
               </div>
             );
           })}
+
+          <div ref={bottomRef} />
         </div>
       </div>
+
+      {/* Agent 追问 */}
+      {askQuestion && (
+        <div className="card-paper p-6 mb-6 border-clay-orange">
+          <h3 className="text-lg font-bold text-ink mb-2">Agent 需要更多信息</h3>
+          <p className="text-ink mb-4">{askQuestion.question}</p>
+
+          <div className="flex gap-3">
+            <textarea
+              value={replyText}
+              onChange={(e) => setReplyText(e.target.value)}
+              onKeyDown={handleReplyKeyDown}
+              placeholder="输入你的回答…（Enter 发送）"
+              rows={2}
+              className="flex-1 bg-card-bg border border-line rounded-xl px-4 py-3 text-sm text-ink placeholder:text-muted resize-none focus:outline-none focus:border-clay-orange"
+            />
+            <button
+              onClick={handleSendReply}
+              disabled={!replyText.trim()}
+              className="px-5 py-2 rounded-xl bg-clay-orange text-white text-sm font-medium disabled:opacity-40 hover:bg-clay-orange/90 transition-colors self-end"
+            >
+              发送
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Skeleton 加载状态 */}
       <div className="space-y-4">
         {/* 路线地图预览 */}
         <div className="card-paper p-6">
           <h4 className="text-sm font-bold text-ink mb-3">路线地图预览（生成中）</h4>
-          <div className="skeleton h-48 rounded-xl bg-card-soft"></div>
+          <div className="skeleton h-48 rounded-xl bg-card-soft" />
         </div>
 
         {/* 行程时间预览 */}
@@ -173,7 +147,7 @@ export const AgentTracePanel: React.FC = () => {
           <h4 className="text-sm font-bold text-ink mb-3">行程时间预览（生成中）</h4>
           <div className="space-y-2">
             {[1, 2, 3].map((i) => (
-              <div key={i} className="skeleton h-12 rounded-lg bg-card-soft"></div>
+              <div key={i} className="skeleton h-12 rounded-lg bg-card-soft" />
             ))}
           </div>
         </div>
@@ -183,7 +157,7 @@ export const AgentTracePanel: React.FC = () => {
           <h4 className="text-sm font-bold text-ink mb-3">路线方案预览（生成中）</h4>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             {[1, 2, 3].map((i) => (
-              <div key={i} className="skeleton h-32 rounded-xl bg-card-soft"></div>
+              <div key={i} className="skeleton h-32 rounded-xl bg-card-soft" />
             ))}
           </div>
         </div>
