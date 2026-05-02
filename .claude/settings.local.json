@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm config *)",
+      "mcp__better-icons__search_icons",
+      "mcp__better-icons__sync_icon",
+      "Bash(git config *)",
+      "Bash(git add *)"
+    ]
+  }
+}
