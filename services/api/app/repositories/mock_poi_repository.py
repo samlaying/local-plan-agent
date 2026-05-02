@@ -1,8 +1,8 @@
 import json
 from pathlib import Path
 
-from services.api.app.core.config import settings
-from services.api.app.schemas import POISchema
+from app.core.config import settings
+from app.schemas import POISchema
 
 
 class MockPOIRepository:

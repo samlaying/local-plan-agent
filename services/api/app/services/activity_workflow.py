@@ -6,8 +6,8 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
-from services.api.app.repositories.mock_poi_repository import MockPOIRepository
-from services.api.app.schemas.planning import (
+from app.repositories.mock_poi_repository import MockPOIRepository
+from app.schemas.planning import (
     ActionSchema,
     ItineraryStepSchema,
     ParticipantSchema,

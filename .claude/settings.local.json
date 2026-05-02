@@ -10,7 +10,27 @@
       "Bash(npx skills *)",
       "Bash(npm install *)",
       "Bash(npm run *)",
-      "Bash(start *)"
+      "Bash(start *)",
+      "Bash(tasklist)",
+      "Bash(findstr \"node python uvicorn\")",
+      "Bash(taskkill *)",
+      "Bash(python -m uvicorn services.api.app.main:app --reload --host 0.0.0.0 --port 8000)",
+      "Bash(netstat -ano)",
+      "Bash(findstr \":2726\")",
+      "Bash(uv --version)",
+      "Bash(findstr \":8000\")",
+      "Bash(timeout 5)",
+      "Bash(curl -s http://localhost:2726)",
+      "Bash(curl -s http://localhost:2726/journals)",
+      "Bash(curl -s http://localhost:2726/city-guide)",
+      "Bash(curl -s http://localhost:2726/inspirations)",
+      "Bash(curl -s http://localhost:2726/companions)",
+      "Bash(docker-compose ps *)",
+      "Bash(docker compose ps *)",
+      "Bash(where python *)",
+      "Bash(uv run *)",
+      "Bash(uv sync *)",
+      "Bash(dir services *)"
     ]
   }
 }

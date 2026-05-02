@@ -154,6 +154,9 @@ export interface ItineraryPlan {
   tradeoffs: string[];
 }
 
+// PlanSchema 别名，用于保持一致性
+export type PlanSchema = ItineraryPlan;
+
 // 协作地图相关类型
 export interface TripMapSnapshot {
   id: string;

@@ -1,4 +1,4 @@
-from services.api.app.schemas.planning import (
+from app.schemas.planning import (
     ActionSchema,
     PlanSchema,
     POISchema,

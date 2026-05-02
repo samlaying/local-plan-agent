@@ -1,8 +1,10 @@
 from fastapi import APIRouter, Query
 
-from services.api.app.schemas.collaboration import (
+from app.schemas.collaboration import (
     AddCommentRequest,
     AddVoteRequest,
+    CompanionRecordDetailSchema,
+    CompanionRecordListResponse,
     CreateGroupRequest,
     CreateShareLinkRequest,
     CreateTripMapRequest,
@@ -19,7 +21,7 @@ from services.api.app.schemas.collaboration import (
     TripMapSnapshotSchema,
     UpdateMapStopStatusRequest,
 )
-from services.api.app.services.collaboration import collaboration_service, timeline_service, trip_map_service
+from app.services.collaboration import collaboration_service, timeline_service, trip_map_service
 
 router = APIRouter(prefix="/api/collaboration", tags=["collaboration"])
 
@@ -72,6 +74,30 @@ def add_vote(group_id: str, request: AddVoteRequest) -> PlanVoteSchema:
 @router.get("/groups/{group_id}/feedback-summary", response_model=GroupFeedbackSummarySchema)
 def get_feedback_summary(group_id: str) -> GroupFeedbackSummarySchema:
     return collaboration_service.feedback_summary(group_id)
+
+
+@router.get("/records", response_model=CompanionRecordListResponse)
+def list_companion_records(
+    user_id: str = Query(default="user_demo"),
+    status_filter: str | None = Query(default=None, alias="status"),
+    scene: str | None = Query(default=None),
+    has_feedback: bool | None = Query(default=None),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=10, ge=1, le=100),
+) -> CompanionRecordListResponse:
+    return collaboration_service.list_records(
+        user_id=user_id,
+        status_filter=status_filter,
+        scene=scene,
+        has_feedback=has_feedback,
+        page=page,
+        page_size=page_size,
+    )
+
+
+@router.get("/records/{group_id}", response_model=CompanionRecordDetailSchema)
+def get_companion_record(group_id: str) -> CompanionRecordDetailSchema:
+    return collaboration_service.get_record_detail(group_id)
 
 
 @router.get("/timeline", response_model=list[TimelineEventSchema])

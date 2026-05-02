@@ -1,4 +1,4 @@
-from services.api.app.services.activity_workflow import (
+from app.services.activity_workflow import (
     PlanPreviewRequest,
     UserLocationSchema,
     WorkflowResult,

@@ -1,11 +1,13 @@
 'use client';
 
 import React, { ReactNode } from 'react';
+import { usePathname } from 'next/navigation';
 import { useWorkbench } from '@/features/planner/contexts/WorkbenchContext';
 import { AppHeader } from './AppHeader';
 import { SideNav } from './SideNav';
 import { RightContextPanel } from './RightContextPanel';
 import { Button } from '@/components/ui';
+import { cn } from '@/lib/utils';
 
 interface AppShellProps {
   children: ReactNode;
@@ -13,6 +15,8 @@ interface AppShellProps {
 
 export const AppShell: React.FC<AppShellProps> = ({ children }) => {
   const { currentState } = useWorkbench();
+  const pathname = usePathname();
+  const showRightPanel = pathname === '/';
 
   return (
     <div className="min-h-screen bg-paper-bg">
@@ -27,14 +31,17 @@ export const AppShell: React.FC<AppShellProps> = ({ children }) => {
         </div>
 
         {/* 中间主任务区 - flex-1 */}
-        <main className="flex-1 px-4 md:px-8 py-6 overflow-y-auto">
+        <main className={cn(
+          'flex-1 px-4 md:px-8 py-6 overflow-y-auto md:pl-[252px]',
+          showRightPanel ? 'lg:pr-[332px]' : 'lg:pr-8'
+        )}>
           {children}
         </main>
 
         {/* 右侧上下文区 - 300px (桌面端显示，移动端隐藏) */}
-        <div className="hidden lg:block">
+        {showRightPanel && <div className="hidden lg:block">
           <RightContextPanel currentState={currentState} />
-        </div>
+        </div>}
       </div>
 
       {/* 移动端底部操作栏 */}

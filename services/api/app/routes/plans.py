@@ -1,6 +1,6 @@
 from fastapi import APIRouter
 
-from services.api.app.services.activity_workflow import (
+from app.services.activity_workflow import (
     PlanPreviewRequest,
     WorkflowResult,
     run_activity_workflow,

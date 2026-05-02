@@ -1,6 +1,7 @@
 import "./globals.css";
 import { WorkbenchProvider } from "@/features/planner/contexts/WorkbenchContext";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
+import { AppShell } from "@/components/layout";
 
 export default function RootLayout({
   children
@@ -12,7 +13,7 @@ export default function RootLayout({
       <body>
         <ErrorBoundary>
           <WorkbenchProvider>
-            {children}
+            <AppShell>{children}</AppShell>
           </WorkbenchProvider>
         </ErrorBoundary>
       </body>

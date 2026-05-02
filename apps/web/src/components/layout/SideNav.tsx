@@ -1,8 +1,9 @@
 'use client';
 
-import React, { useState } from 'react';
+import React from 'react';
+import Link from 'next/link';
 import { useWorkbench } from '@/features/planner/contexts/WorkbenchContext';
-import { useRouter } from 'next/navigation';
+import { usePathname } from 'next/navigation';
 import { cn } from '@/lib/utils';
 import { MapPinIcon, CalendarIcon, UsersIcon, CheckCircleIcon } from '../icons';
 
@@ -14,27 +15,28 @@ type NavSection = 'today' | 'my-plans' | 'favorites' | 'city-guide' | 'companion
 
 export const SideNav: React.FC<SideNavProps> = ({ currentState }) => {
   const { transitionTo } = useWorkbench();
-  const router = useRouter();
-  const [activeSection, setActiveSection] = useState<NavSection>('today');
+  const pathname = usePathname();
 
   const menuItems = [
     { id: 'today' as NavSection, label: '今日规划', icon: MapPinIcon, route: '/' },
-    { id: 'my-plans' as NavSection, label: '我的游笺', icon: CalendarIcon, route: '/my-plans' },
-    { id: 'favorites' as NavSection, label: '收藏灵感', icon: CheckCircleIcon, route: '/favorites' },
+    { id: 'my-plans' as NavSection, label: '我的游笺', icon: CalendarIcon, route: '/journals' },
+    { id: 'favorites' as NavSection, label: '收藏灵感', icon: CheckCircleIcon, route: '/inspirations' },
     { id: 'city-guide' as NavSection, label: '城市志', icon: MapPinIcon, route: '/city-guide' },
     { id: 'companions' as NavSection, label: '同行记录', icon: UsersIcon, route: '/companions' },
   ];
 
   const handleNavClick = (item: typeof menuItems[0]) => {
-    setActiveSection(item.id);
-
     // 如果是今日规划，使用工作台状态切换
     if (item.id === 'today') {
       transitionTo('input');
-    } else {
-      // 其他菜单项暂时显示"开发中"提示
-      alert(`${item.label}功能正在开发中，敬请期待！`);
     }
+  };
+
+  const getIsActive = (item: typeof menuItems[0]) => {
+    if (item.route === '/') {
+      return pathname === '/';
+    }
+    return pathname === item.route || pathname.startsWith(`${item.route}/`);
   };
 
   return (
@@ -43,11 +45,12 @@ export const SideNav: React.FC<SideNavProps> = ({ currentState }) => {
       <div className="space-y-2">
         {menuItems.map((item) => {
           const Icon = item.icon;
-          const isActive = activeSection === item.id;
+          const isActive = getIsActive(item);
 
           return (
-            <button
+            <Link
               key={item.id}
+              href={item.route}
               onClick={() => handleNavClick(item)}
               className={cn(
                 'w-full flex items-center gap-3 px-4 py-3 rounded-2xl transition-all duration-200',
@@ -58,7 +61,7 @@ export const SideNav: React.FC<SideNavProps> = ({ currentState }) => {
             >
               <Icon className="w-5 h-5" />
               <span>{item.label}</span>
-            </button>
+            </Link>
           );
         })}
       </div>

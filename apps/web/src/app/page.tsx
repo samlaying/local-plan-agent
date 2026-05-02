@@ -1,6 +1,5 @@
 'use client';
 
-import { AppShell } from '@/components/layout';
 import { useWorkbench } from '@/features/planner/contexts/WorkbenchContext';
 import { GoalInputCard, AgentTracePanel, PlanCompareGrid, PlanDetailPanel, ExecutionConfirmPanel, ExecutionDonePanel } from '@/components/planner';
 import { ShareLinkCard, MemberList, CommentList, CommentComposer, VotePanel } from '@/components/collaboration';
@@ -90,8 +89,6 @@ export default function HomePage() {
   };
 
   return (
-    <AppShell>
-      {renderContent()}
-    </AppShell>
+    <>{renderContent()}</>
   );
 }

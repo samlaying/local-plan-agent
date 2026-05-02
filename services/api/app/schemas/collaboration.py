@@ -5,7 +5,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-from services.api.app.schemas.planning import LocationSchema, PlanSchema
+from app.schemas.planning import LocationSchema, PlanSchema
 
 
 RouteMode = Literal["driving", "walking", "transit", "taxi"]
@@ -226,3 +226,46 @@ class GroupFeedbackSummarySchema(BaseModel):
     should_regenerate_plan: bool
     reason: str
     latest_comments: list[str]
+
+
+CompanionRecordStatus = Literal["active", "has_feedback", "waiting_confirmation", "completed", "cancelled"]
+
+
+class CompanionRecordSchema(BaseModel):
+    group: ActivityGroupSchema
+    plan: PlanSchema
+    members: list[GroupMemberSchema]
+    comments_count: int
+    votes_count: int
+    pending_feedback_count: int
+    latest_comment: GroupCommentSchema | None = None
+    latest_event: TimelineEventSchema | None = None
+    share_link: ShareLinkSchema | None = None
+    status: CompanionRecordStatus
+    created_at: datetime
+    updated_at: datetime
+
+
+class CompanionRecordStatsSchema(BaseModel):
+    active_count: int
+    feedback_count: int
+    waiting_confirmation_count: int
+
+
+class CompanionRecordListResponse(BaseModel):
+    items: list[CompanionRecordSchema]
+    total: int
+    page: int
+    page_size: int
+    stats: CompanionRecordStatsSchema
+
+
+class CompanionRecordDetailSchema(BaseModel):
+    group: ActivityGroupSchema
+    plan: PlanSchema
+    members: list[GroupMemberSchema]
+    share_links: list[ShareLinkSchema]
+    comments: list[GroupCommentSchema]
+    votes: list[PlanVoteSchema]
+    timeline: list[TimelineEventSchema]
+    feedback_summary: GroupFeedbackSummarySchema

@@ -1,3 +1,28 @@
+import type {
+  CityArticleListResponse,
+  CityEventListResponse,
+  CityGuideHomeResponse,
+  CityRouteListResponse,
+} from "@/types/city-guide";
+import type {
+  CompanionRecordDetail,
+  CompanionRecordListResponse,
+} from "@/types/companion-records";
+import type {
+  CreateCollectionRequest,
+  CreateInspirationRequest,
+  InspirationCollection,
+  InspirationCollectionListResponse,
+  InspirationItem,
+  InspirationListResponse,
+} from "@/types/inspirations";
+import type {
+  CreateJournalFromTripMapRequest,
+  JournalListResponse,
+  TravelJournalDetail,
+  UpdateJournalRequest,
+} from "@/types/journals";
+
 // API 客户端工具函数
 // 使用 Next.js rewrite 规则：/backend-api/:path* -> http://localhost:8000/api/:path*
 
@@ -148,4 +173,189 @@ export async function getFeedbackSummary(groupId: string) {
 // 13. 获取时间线
 export async function getTimeline(planId: string) {
   return apiRequest(`/collaboration/timeline?plan_id=${planId}`);
+}
+
+// ==================== JOURNALS API ====================
+
+export async function getJournals(params?: {
+  status?: string;
+  scene?: string;
+  tag?: string;
+  keyword?: string;
+  sort?: string;
+  page?: number;
+  page_size?: number;
+}): Promise<JournalListResponse> {
+  const qs = new URLSearchParams();
+  Object.entries(params ?? {}).forEach(([key, value]) => {
+    if (value !== undefined && value !== null) qs.set(key, String(value));
+  });
+
+  return apiRequest(`/journals${qs.toString() ? `?${qs.toString()}` : ""}`);
+}
+
+export async function getJournalDetail(journalId: string): Promise<TravelJournalDetail> {
+  return apiRequest(`/journals/${journalId}`);
+}
+
+export async function createJournalFromTripMap(
+  request: CreateJournalFromTripMapRequest
+): Promise<TravelJournalDetail> {
+  return apiRequest("/journals/from-trip-map", {
+    method: "POST",
+    body: JSON.stringify(request),
+  });
+}
+
+export async function updateJournal(
+  journalId: string,
+  request: UpdateJournalRequest
+): Promise<TravelJournalDetail> {
+  return apiRequest(`/journals/${journalId}`, {
+    method: "PATCH",
+    body: JSON.stringify(request),
+  });
+}
+
+export async function archiveJournal(journalId: string): Promise<TravelJournalDetail> {
+  return apiRequest(`/journals/${journalId}/archive`, {
+    method: "PATCH",
+  });
+}
+
+// ==================== INSPIRATIONS API ====================
+
+export async function getInspirations(params?: {
+  type?: string;
+  category?: string;
+  tag?: string;
+  keyword?: string;
+  city?: string;
+  sort?: string;
+  page?: number;
+  page_size?: number;
+}): Promise<InspirationListResponse> {
+  const qs = new URLSearchParams();
+  Object.entries(params ?? {}).forEach(([key, value]) => {
+    if (value !== undefined && value !== null) qs.set(key, String(value));
+  });
+
+  return apiRequest(`/inspirations${qs.toString() ? `?${qs.toString()}` : ""}`);
+}
+
+export async function createInspiration(
+  request: CreateInspirationRequest
+): Promise<InspirationItem> {
+  return apiRequest("/inspirations", {
+    method: "POST",
+    body: JSON.stringify(request),
+  });
+}
+
+export async function getInspirationCollections(): Promise<InspirationCollectionListResponse> {
+  return apiRequest("/inspiration-collections");
+}
+
+export async function createInspirationCollection(
+  request: CreateCollectionRequest
+): Promise<InspirationCollection> {
+  return apiRequest("/inspiration-collections", {
+    method: "POST",
+    body: JSON.stringify(request),
+  });
+}
+
+export async function addInspirationToCollection(
+  collectionId: string,
+  inspiration_id: string
+): Promise<void> {
+  return apiRequest(`/inspiration-collections/${collectionId}/items`, {
+    method: "POST",
+    body: JSON.stringify({ inspiration_id }),
+  });
+}
+
+// ==================== CITY GUIDE API ====================
+
+export async function getCityGuideHome(params?: { city?: string; district?: string }): Promise<CityGuideHomeResponse> {
+  const qs = new URLSearchParams();
+  if (params?.city) qs.set("city", params.city);
+  if (params?.district) qs.set("district", params.district);
+
+  return apiRequest(`/city-guide/home${qs.toString() ? `?${qs.toString()}` : ""}`);
+}
+
+export async function getCityArticles(params?: {
+  category?: string;
+  tag?: string;
+  keyword?: string;
+  page?: number;
+  page_size?: number;
+}): Promise<CityArticleListResponse> {
+  const qs = new URLSearchParams();
+  Object.entries(params ?? {}).forEach(([key, value]) => {
+    if (value !== undefined && value !== null) qs.set(key, String(value));
+  });
+
+  return apiRequest(`/city-guide/articles${qs.toString() ? `?${qs.toString()}` : ""}`);
+}
+
+export async function getCityArticleDetail(articleId: string) {
+  return apiRequest(`/city-guide/articles/${articleId}`);
+}
+
+export async function saveArticleToInspirations(articleId: string) {
+  return apiRequest(`/city-guide/articles/${articleId}/save-to-inspirations`, {
+    method: "POST",
+  });
+}
+
+export async function getCityRoutes(params?: {
+  route_type?: string;
+  tag?: string;
+  page?: number;
+  page_size?: number;
+}): Promise<CityRouteListResponse> {
+  const qs = new URLSearchParams();
+  Object.entries(params ?? {}).forEach(([key, value]) => {
+    if (value !== undefined && value !== null) qs.set(key, String(value));
+  });
+
+  return apiRequest(`/city-guide/routes${qs.toString() ? `?${qs.toString()}` : ""}`);
+}
+
+export async function getCityEvents(params?: {
+  from?: string;
+  to?: string;
+  city?: string;
+  district?: string;
+}): Promise<CityEventListResponse> {
+  const qs = new URLSearchParams();
+  Object.entries(params ?? {}).forEach(([key, value]) => {
+    if (value !== undefined && value !== null) qs.set(key, String(value));
+  });
+
+  return apiRequest(`/city-guide/events${qs.toString() ? `?${qs.toString()}` : ""}`);
+}
+
+// ==================== COMPANION RECORDS API ====================
+
+export async function getCompanionRecords(params?: {
+  user_id?: string;
+  status?: string;
+  scene?: string;
+  has_feedback?: boolean;
+  page?: number;
+  page_size?: number;
+}): Promise<CompanionRecordListResponse> {
+  const qs = new URLSearchParams();
+  Object.entries(params ?? {}).forEach(([key, value]) => {
+    if (value !== undefined && value !== null) qs.set(key, String(value));
+  });
+
+  return apiRequest(`/collaboration/records${qs.toString() ? `?${qs.toString()}` : ""}`);
+}
+
+export async function getCompanionRecordDetail(groupId: string): Promise<CompanionRecordDetail> {
+  return apiRequest(`/collaboration/records/${groupId}`);
 }

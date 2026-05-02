@@ -7,10 +7,14 @@ from uuid import uuid4
 
 from fastapi import HTTPException, status
 
-from services.api.app.schemas.collaboration import (
+from app.schemas.collaboration import (
     ActivityGroupSchema,
     AddCommentRequest,
     AddVoteRequest,
+    CompanionRecordDetailSchema,
+    CompanionRecordListResponse,
+    CompanionRecordSchema,
+    CompanionRecordStatsSchema,
     CreateGroupRequest,
     CreateShareLinkRequest,
     CreateTripMapRequest,
@@ -31,7 +35,7 @@ from services.api.app.schemas.collaboration import (
     TripMapSnapshotSchema,
     UpdateMapStopStatusRequest,
 )
-from services.api.app.schemas.planning import ItineraryStepSchema, LocationSchema, PlanSchema, POISchema
+from app.schemas.planning import ItineraryStepSchema, LocationSchema, PlanSchema, POISchema
 
 
 class TimelineService:
@@ -429,6 +433,116 @@ class CollaborationService:
             latest_comments=[comment.content for comment in comments[-5:]],
         )
 
+    def list_records(
+        self,
+        *,
+        user_id: str = "user_demo",
+        status_filter: str | None = None,
+        scene: str | None = None,
+        has_feedback: bool | None = None,
+        page: int = 1,
+        page_size: int = 10,
+    ) -> CompanionRecordListResponse:
+        records = [
+            self._build_record(group)
+            for group in self._groups.values()
+            if group.owner_id == user_id or any(member.user_id == user_id for member in self._members_by_group[group.id])
+        ]
+        if status_filter:
+            records = [record for record in records if record.status == status_filter]
+        if scene:
+            records = [record for record in records if record.group.scene == scene]
+        if has_feedback is not None:
+            records = [record for record in records if (record.pending_feedback_count > 0) is has_feedback]
+        records = sorted(records, key=lambda record: record.updated_at, reverse=True)
+        stats = CompanionRecordStatsSchema(
+            active_count=len([record for record in records if record.status == "active"]),
+            feedback_count=len([record for record in records if record.pending_feedback_count > 0]),
+            waiting_confirmation_count=len([record for record in records if record.status == "waiting_confirmation"]),
+        )
+        total = len(records)
+        return CompanionRecordListResponse(
+            items=_paginate(records, page, page_size),
+            total=total,
+            page=page,
+            page_size=page_size,
+            stats=stats,
+        )
+
+    def get_record_detail(self, group_id: str) -> CompanionRecordDetailSchema:
+        group = self._require_group(group_id)
+        return CompanionRecordDetailSchema(
+            group=group,
+            plan=self._plans_by_group[group.id],
+            members=self._members_by_group[group.id],
+            share_links=self._share_links_for_group(group.id),
+            comments=self._comments_by_group[group.id],
+            votes=self._votes_by_group[group.id],
+            timeline=self._timeline.list_events(plan_id=group.plan_id, group_id=group.id),
+            feedback_summary=self.feedback_summary(group.id),
+        )
+
+    def list_group_members(self, group_id: str) -> list[GroupMemberSchema]:
+        self._require_group(group_id)
+        return self._members_by_group[group_id]
+
+    def find_plan_by_id(self, plan_id: str) -> PlanSchema | None:
+        for plan in self._plans_by_group.values():
+            if plan.id == plan_id:
+                return plan
+        return None
+
+    def _build_record(self, group: ActivityGroupSchema) -> CompanionRecordSchema:
+        comments = self._comments_by_group[group.id]
+        votes = self._votes_by_group[group.id]
+        timeline = self._timeline.list_events(plan_id=group.plan_id, group_id=group.id)
+        pending_feedback_count = len(comments) + len([vote for vote in votes if vote.vote_type == "dislike"])
+        record_status = self._record_status(group, comments, votes)
+        latest_event = timeline[-1] if timeline else None
+        latest_comment = comments[-1] if comments else None
+        updated_at = max(
+            [group.updated_at]
+            + [comment.created_at for comment in comments]
+            + [vote.created_at for vote in votes]
+            + [event.created_at for event in timeline]
+        )
+        return CompanionRecordSchema(
+            group=group,
+            plan=self._plans_by_group[group.id],
+            members=self._members_by_group[group.id],
+            comments_count=len(comments),
+            votes_count=len(votes),
+            pending_feedback_count=pending_feedback_count,
+            latest_comment=latest_comment,
+            latest_event=latest_event,
+            share_link=self._latest_share_link(group.id),
+            status=record_status,
+            created_at=group.created_at,
+            updated_at=updated_at,
+        )
+
+    def _record_status(
+        self, group: ActivityGroupSchema, comments: list[GroupCommentSchema], votes: list[PlanVoteSchema]
+    ) -> str:
+        if group.status in {"completed", "cancelled"}:
+            return group.status
+        if comments or any(vote.vote_type == "dislike" for vote in votes):
+            return "has_feedback"
+        if not votes:
+            return "waiting_confirmation"
+        return "active"
+
+    def _latest_share_link(self, group_id: str) -> ShareLinkSchema | None:
+        links = self._share_links_for_group(group_id)
+        return links[-1] if links else None
+
+    def _share_links_for_group(self, group_id: str) -> list[ShareLinkSchema]:
+        return [
+            self._share_links_by_token[token]
+            for token in self._share_tokens_by_group.get(group_id, [])
+            if token in self._share_links_by_token
+        ]
+
     def _infer_constraints(self, comments: list[GroupCommentSchema], votes: list[PlanVoteSchema]) -> list[str]:
         text = " ".join([comment.content for comment in comments] + [vote.comment or "" for vote in votes]).lower()
         constraints: list[str] = []
@@ -482,3 +596,8 @@ def _distance_meters(start: LocationSchema, end: LocationSchema) -> int:
     delta_lng = radians(end.lng - start.lng)
     value = sin(delta_lat / 2) ** 2 + cos(start_lat) * cos(end_lat) * sin(delta_lng / 2) ** 2
     return round(radius_meters * 2 * asin(sqrt(value)))
+
+
+def _paginate[T](items: list[T], page: int, page_size: int) -> list[T]:
+    start = (page - 1) * page_size
+    return items[start : start + page_size]

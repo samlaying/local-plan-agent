@@ -1,3 +1,3 @@
-from services.api.app.repositories.mock_poi_repository import MockPOIRepository
+from app.repositories.mock_poi_repository import MockPOIRepository
 
 __all__ = ["MockPOIRepository"]
