@@ -1,8 +1,14 @@
 from fastapi import APIRouter
 
+from services.api.app.services.activity_workflow import (
+    PlanPreviewRequest,
+    WorkflowResult,
+    run_activity_workflow,
+)
+
 router = APIRouter(prefix="/api/plans", tags=["plans"])
 
-# First-stage endpoints:
-# POST /api/plans/preview
-# GET /api/plans/{plan_id}
-# POST /api/plans/{plan_id}/actions
+
+@router.post("/preview", response_model=WorkflowResult)
+def preview_plans(request: PlanPreviewRequest) -> WorkflowResult:
+    return run_activity_workflow(raw_text=request.query, location=request.location)
