@@ -92,6 +92,40 @@ _PREFERENCE_ADJUSTMENTS_TEMPLATE = """\
 {adjustments}
 """
 
+_SINGLE_PLAN_SYSTEM_PROMPT = """\
+你是一位专业的本地生活行程规划专家。你的任务是根据候选地点列表，为用户生成 1 个最优行程方案。
+
+要求：
+1. 方案必须选择一个主要活动地点和一个餐厅
+2. 选择时优先考虑：评分高、等位时间短、适合该场景的地点
+3. 餐厅选择要与活动地点的位置和风格协调
+4. 输出必须是合法 JSON，不含其他内容
+5. 时间窗口覆盖：生成的方案必须覆盖用户给出的完整时间窗口（从 start_time 到 end_time）。\
+选择地点时，请确保主活动、用餐及可选附加活动的总时长（含出行时间）能填满整个时间窗口。\
+如果主活动和用餐结束后仍有较多剩余时间（≥15 分钟），优先通过 extra_activity_id 安排附加活动。\
+方案不允许在时间窗口中途结束。
+6. 全中文输出：plan_title、plan_summary 等所有文本字段必须使用中文。\
+POI 的原始英文名称可保留，其余描述性文字一律用中文。
+
+输出格式（JSON，plans 数组只包含 1 个元素）：
+{
+  "plans": [
+    {
+      "plan_title": "方案标题（简短描述风格）",
+      "plan_summary": "一句话描述方案亮点",
+      "selected_activity_id": "主活动 POI 的 id",
+      "selected_restaurant_id": "餐厅 POI 的 id",
+      "extra_activity_id": "可选的附加活动 POI id，没有则为 null"
+    }
+  ]
+}
+
+注意：
+- selected_activity_id、selected_restaurant_id 必须从候选列表中选择，使用完整 id 字段值
+- extra_activity_id 可为 null，填入时也必须从活动候选列表中选择
+- plans 数组必须恰好包含 1 个方案
+"""
+
 _REQUIRED_FIELDS = ["plans"]
 
 # ---------------------------------------------------------------------------
@@ -172,6 +206,38 @@ def _build_user_message(
         parts.append(_PREFERENCE_ADJUSTMENTS_TEMPLATE.format(adjustments=adjustments_text))
 
     parts.append("\n请根据以上候选列表生成 2-3 个行程方案，以 JSON 格式返回。")
+    return "".join(parts)
+
+
+def _build_user_message_single(
+    intent: UserIntentSchema,
+    retrieval: RetrievalResult,
+    style: str,
+) -> str:
+    """构建单策略 LLM 调用的用户消息，包含风格说明，要求只生成 1 个方案。"""
+    parts: list[str] = []
+
+    parts.append(
+        f"用户需求：{intent.raw_text}\n"
+        f"场景：{intent.scenario}\n"
+        f"出行时间：{_format_time_window(intent)}\n"
+        f"出行时长：{intent.duration_hours_min}–{intent.duration_hours_max} 小时\n"
+        f"出行方式：{intent.travel_mode}\n"
+        f"最大距离：{intent.max_distance_km}km\n"
+    )
+
+    if intent.diet_requirements:
+        parts.append(f"饮食要求：{', '.join(intent.diet_requirements)}\n")
+
+    if style:
+        parts.append(f"当前风格：{style}\n")
+
+    parts.append("\n")
+    parts.append(_serialize_poi_list(retrieval.activities, "活动"))
+    parts.append("\n")
+    parts.append(_serialize_poi_list(retrieval.restaurants, "餐厅"))
+
+    parts.append("\n请从以上候选列表中选出 1 个最优方案，以 JSON 格式返回。")
     return "".join(parts)
 
 
@@ -438,23 +504,35 @@ class PlanningNode(BaseNode):
         intent = state.intent
         retrieval = state.retrieval
 
-        if intent is None or retrieval is None:
+        if intent is None:
             state.trace.append(TraceEvent(
                 agent=self.name,
                 status="error",
-                message="缺少必要输入：intent 或 retrieval 为空，无法生成方案",
+                message="缺少必要输入：intent 为空，无法生成方案",
             ))
             return state
 
-        plans = await self._generate_with_llm(
-            intent,
-            retrieval,
-            state.verifier_rejection_reason,
-            state.preference_adjustments,
-        )
+        if state.retrieval_strategies:
+            # 新路径：每个策略独立生成 1 个方案，并行执行
+            plans = await self._plan_from_strategies(intent, state.retrieval_strategies)
+        else:
+            # 旧路径：从单一候选池让 LLM 选出 2-3 个方案（向后兼容）
+            if retrieval is None:
+                state.trace.append(TraceEvent(
+                    agent=self.name,
+                    status="error",
+                    message="缺少必要输入：retrieval 为空，无法生成方案",
+                ))
+                return state
+            plans = await self._generate_with_llm(
+                intent,
+                retrieval,
+                state.verifier_rejection_reason,
+                state.preference_adjustments,
+            )
 
-        if not plans:
-            # LLM 路径失败，回退到规则方式
+        if not plans and retrieval is not None:
+            # LLM 路径失败，回退到规则方式（仅旧路径有 retrieval 可用）
             logger.info("PlanningNode: LLM 路径未产生有效方案，回退到规则生成")
             state.trace.append(TraceEvent(
                 agent=self.name,
@@ -534,6 +612,78 @@ class PlanningNode(BaseNode):
 
         if not plans:
             logger.warning("PlanningNode: LLM 返回数据未能产生有效方案")
+
+        return plans
+
+    # ------------------------------------------------------------------
+    # 多策略并行规划路径
+    # ------------------------------------------------------------------
+
+    async def _call_llm_single_plan(
+        self,
+        intent: UserIntentSchema,
+        retrieval_result: RetrievalResult,
+    ) -> list[PlanSchema]:
+        """针对单个 RetrievalResult（含 style）调用 LLM，要求只生成 1 个最优方案。
+
+        失败时返回空列表，不抛出异常，由调用方聚合结果。
+        """
+        style = retrieval_result.style
+        messages = [
+            LLMMessage(role="system", content=_SINGLE_PLAN_SYSTEM_PROMPT),
+            LLMMessage(
+                role="user",
+                content=_build_user_message_single(intent, retrieval_result, style),
+            ),
+        ]
+
+        try:
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(
+                None,
+                lambda: self._llm.chat(
+                    messages,
+                    temperature=0.7,
+                    max_tokens=1024,
+                    json_mode=True,
+                ),
+            )
+        except LLMError as exc:
+            logger.warning("PlanningNode: 策略 %r 的 LLM 调用失败: %s", style, exc)
+            return []
+
+        try:
+            llm_data = parse_json_response(response, required_fields=_REQUIRED_FIELDS)
+        except LLMParseError as exc:
+            logger.warning(
+                "PlanningNode: 策略 %r 的 LLM 响应解析失败: %s | raw=%r",
+                style, exc, exc.raw_content[:200],
+            )
+            return []
+
+        poi_map = _build_poi_map(retrieval_result)
+        plans = _plans_from_llm_response(llm_data, intent, retrieval_result, poi_map)
+
+        if not plans:
+            logger.warning("PlanningNode: 策略 %r 的 LLM 返回数据未能产生有效方案", style)
+
+        return plans
+
+    async def _plan_from_strategies(
+        self,
+        intent: UserIntentSchema,
+        retrieval_strategies: list[RetrievalResult],
+    ) -> list[PlanSchema]:
+        """并行对每个搜索策略调用 LLM，各自生成 1 个方案，合并为候选列表。"""
+        tasks = [
+            self._call_llm_single_plan(intent, strategy)
+            for strategy in retrieval_strategies
+        ]
+        results_per_strategy: list[list[PlanSchema]] = await asyncio.gather(*tasks)
+
+        plans: list[PlanSchema] = []
+        for strategy_plans in results_per_strategy:
+            plans.extend(strategy_plans)
 
         return plans
 
