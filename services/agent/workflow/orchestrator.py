@@ -115,7 +115,7 @@ async def run_orchestrator(session: Session) -> None:
             poi_searcher = MockPOISearcher(repository=MockPOIRepository())
         else:
             poi_searcher = AmapSearcher()
-        retrieval_node = RetrievalNode(searcher=poi_searcher)
+        retrieval_node = RetrievalNode(searcher=poi_searcher, llm_client=llm_client)
         planning_node = PlanningNode(llm_client=llm_client)
         verifier_node = VerifierNode()
 
