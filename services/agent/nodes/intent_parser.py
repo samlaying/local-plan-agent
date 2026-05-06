@@ -38,7 +38,7 @@ MAX_CLARIFICATION_COUNT = 2
 _INTENT_SCHEMA_DESCRIPTION = (
     "包含以下字段的 JSON 对象："
     "origin（出发地，字符串或 null），"
-    "city（城市名，字符串，如"上海"），"
+    "city（城市名，字符串，如'上海'），"
     "date（日期 YYYY-MM-DD，字符串），"
     "start_time（开始时间 HH:MM，字符串或 null），"
     "end_time（结束时间 HH:MM，字符串或 null），"
