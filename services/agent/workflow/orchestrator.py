@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 from datetime import datetime, timezone
 from typing import Any
 
@@ -30,7 +31,10 @@ from agent.nodes.verifier_node import VerifierNode
 from agent.session.session import Session
 from agent.state.types import PlanningState
 from app.core.llm import get_llm_client
+from app.repositories.mock_poi_repository import MockPOIRepository
 from app.repositories.user_profile_repository import UserProfileRepository
+from tools.poi.amap_searcher import AmapSearcher
+from tools.poi.mock_searcher import MockPOISearcher
 
 logger = logging.getLogger(__name__)
 
@@ -106,7 +110,12 @@ async def run_orchestrator(session: Session) -> None:
         intent_node = IntentParserNode(llm_client=llm_client)
         profile_repo = UserProfileRepository()
         profile_node = ProfileNode(repository=profile_repo)
-        retrieval_node = RetrievalNode()
+        use_mock_poi = os.getenv("USE_MOCK_POI", "true").lower() != "false"
+        if use_mock_poi:
+            poi_searcher = MockPOISearcher(repository=MockPOIRepository())
+        else:
+            poi_searcher = AmapSearcher()
+        retrieval_node = RetrievalNode(searcher=poi_searcher)
         planning_node = PlanningNode(llm_client=llm_client)
         verifier_node = VerifierNode()
 

@@ -33,6 +33,7 @@ from app.schemas.planning import POISchema, UserIntentSchema
 from app.services.activity_workflow import _is_open_for_window
 from agent.nodes.base import BaseNode
 from agent.state.types import PlanningState, RetrievalResult, TraceEvent
+from tools.poi.base import AbstractPOISearcher
 
 logger = logging.getLogger(__name__)
 
@@ -51,9 +52,11 @@ class RetrievalNode(BaseNode):
 
     def __init__(
         self,
+        searcher: AbstractPOISearcher,
         repository: MockPOIRepository | None = None,
         routes_path: Path | None = None,
     ) -> None:
+        self._searcher = searcher
         self._repository = repository or MockPOIRepository()
         self._routes_path = routes_path or self._default_routes_path()
 
@@ -130,40 +133,32 @@ class RetrievalNode(BaseNode):
     # ------------------------------------------------------------------
 
     async def _fetch_activities(self, intent: UserIntentSchema) -> list[POISchema]:
-        """从 MockPOIRepository 按 scenario 和 city 过滤活动类 POI。
+        """通过注入的 searcher 获取活动候选列表。
 
-        list_activities() 是同步 IO（读 JSON 文件），用 run_in_executor 放入线程池
+        searcher.search_activities() 是同步方法，用 run_in_executor 放入线程池
         避免阻塞 event loop，实现与其他子任务的真正并发。
         """
         loop = asyncio.get_running_loop()
-        all_activities: list[POISchema] = await loop.run_in_executor(
-            None, lambda: self._repository.list_activities()
+        return await loop.run_in_executor(
+            None, lambda: self._searcher.search_activities(intent)
         )
-        return [
-            poi for poi in all_activities
-            if intent.scenario in poi.suitable_scenarios and poi.city == intent.city
-        ]
 
     # ------------------------------------------------------------------
     # 子任务 2：餐厅搜索
     # ------------------------------------------------------------------
 
     async def _fetch_restaurants(self, intent: UserIntentSchema) -> list[POISchema]:
-        """从 MockPOIRepository 按 scenario 和饮食要求过滤餐厅 POI。
+        """通过注入的 searcher 获取餐厅候选列表，再叠加饮食要求过滤。
 
-        list_restaurants() 是同步 IO（读 JSON 文件），用 run_in_executor 放入线程池
+        searcher.search_restaurants() 是同步方法，用 run_in_executor 放入线程池
         避免阻塞 event loop，实现与其他子任务的真正并发。
         """
         loop = asyncio.get_running_loop()
-        all_restaurants: list[POISchema] = await loop.run_in_executor(
-            None, lambda: self._repository.list_restaurants()
+        candidates: list[POISchema] = await loop.run_in_executor(
+            None, lambda: self._searcher.search_restaurants(intent)
         )
-        candidates = [
-            poi for poi in all_restaurants
-            if intent.scenario in poi.suitable_scenarios and poi.city == intent.city
-        ]
 
-        # 饮食要求过滤：diet_requirements 非空时，用 tags 匹配
+        # 饮食要求过滤：diet_requirements 非空时，用 tags 匹配（与 searcher 无关的通用逻辑）
         if intent.diet_requirements:
             diet_tags = set(intent.diet_requirements)
             candidates = [

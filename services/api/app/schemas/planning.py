@@ -102,6 +102,8 @@ class POISchema(BaseModel):
     reasons: list[str] = Field(default_factory=list)
     cautions: list[str] = Field(default_factory=list)
     location: LocationSchema
+    # Optional fields for real-API data; not populated by mock data.
+    amap_id: str | None = None
 
 
 class ItineraryStepSchema(BaseModel):
