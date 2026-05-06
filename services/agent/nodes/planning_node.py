@@ -20,11 +20,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from typing import Any
 
 from agent.nodes.base import BaseNode
 from agent.state.types import PlanningState, RetrievalResult, TraceEvent
-from app.schemas.planning import PlanSchema, POISchema, UserIntentSchema
+from app.schemas.planning import ItineraryStepSchema, PlanSchema, POISchema, UserIntentSchema
 from app.services.activity_workflow import (
     ConstraintCheckResult,
     _build_plan,
@@ -49,6 +50,12 @@ _SYSTEM_PROMPT = """\
 3. 选择时优先考虑：评分高、等位时间短、适合该场景的地点
 4. 餐厅选择要与活动地点的位置和风格协调
 5. 输出必须是合法 JSON，不含其他内容
+6. 时间窗口覆盖：生成的方案必须覆盖用户给出的完整时间窗口（从 start_time 到 end_time）。\
+选择地点时，请确保主活动、用餐及可选附加活动的总时长（含出行时间）能填满整个时间窗口。\
+如果主活动和用餐结束后仍有较多剩余时间（≥15 分钟），优先通过 extra_activity_id 安排附加活动。\
+方案不允许在时间窗口中途结束。
+7. 全中文输出：plan_title、plan_summary 等所有文本字段必须使用中文。\
+POI 的原始英文名称可保留，其余描述性文字一律用中文。
 
 输出格式（JSON 数组，每个元素是一个方案）：
 {
@@ -169,6 +176,153 @@ def _build_user_message(
 
 
 # ---------------------------------------------------------------------------
+# 中文本地化：将 _build_plan 生成的英文描述替换为中文
+# ---------------------------------------------------------------------------
+
+def _localize_step(step: ItineraryStepSchema, poi_map: dict[str, POISchema]) -> ItineraryStepSchema:
+    """将单个行程步骤中的英文描述替换为中文。"""
+    desc = step.description
+
+    # 替换 "estimated queue X minutes" → "预计等位 X 分钟"
+    desc = re.sub(
+        r"estimated queue\s+(\d+)\s+minutes?",
+        lambda m: f"预计等位 {m.group(1)} 分钟",
+        desc,
+        flags=re.IGNORECASE,
+    )
+
+    # 替换 "Estimated local travel time based on mock POI data."
+    desc = re.sub(
+        r"Estimated local travel time based on mock POI data\.?",
+        "预计本地出行时间（基于模拟数据）。",
+        desc,
+        flags=re.IGNORECASE,
+    )
+
+    # 替换 step description 中的分号分隔的子类别描述，如 "亲子活动; estimated queue 0 minutes."
+    # 已由上方两条规则处理，此处保留分号清理
+    desc = desc.strip()
+
+    return step.model_copy(update={"description": desc})
+
+
+def _localize_fit_summary(intent: UserIntentSchema, extra_poi: POISchema | None) -> list[str]:
+    """生成中文版 fit_summary，替代 _build_plan 生成的英文版本。"""
+    if intent.scenario == "family_weight_loss_child5":
+        summary = [
+            "主要活动适合 5 岁孩子参与。",
+            "餐厅提供适合减脂需求的健康餐食选项。",
+        ]
+    else:
+        summary = [
+            "活动适合四人朋友同行。",
+            "餐厅适合混合性别小组用餐和聊天。",
+        ]
+    if extra_poi is not None:
+        summary.append("附加活动可根据时间和排队情况灵活决定是否参与。")
+    return summary
+
+
+def _localize_plan(
+    plan: PlanSchema,
+    intent: UserIntentSchema,
+    extra_poi: POISchema | None,
+    poi_map: dict[str, POISchema],
+) -> PlanSchema:
+    """对 _build_plan 输出的方案进行中文本地化处理。
+
+    处理内容：
+    - 将 steps 中的英文 description 替换为中文
+    - 将 fit_summary 替换为中文版本
+    """
+    localized_steps = [_localize_step(step, poi_map) for step in plan.steps]
+    localized_fit_summary = _localize_fit_summary(intent, extra_poi)
+    return plan.model_copy(update={
+        "steps": localized_steps,
+        "fit_summary": localized_fit_summary,
+    })
+
+
+# ---------------------------------------------------------------------------
+# 时间窗口填充：确保方案步骤覆盖完整时间窗口
+# ---------------------------------------------------------------------------
+
+_FILLER_STEP_OPTIONS = [
+    ("周边漫步探索", "利用剩余时间，在周边街区散步探索，感受当地氛围。"),
+    ("咖啡或甜品时间", "就近找一家咖啡馆或甜品店，放松休息，享受惬意时光。"),
+    ("自由活动时间", "剩余时间自由安排，可拍照留念、逛逛周边小店或休息。"),
+]
+
+
+def _parse_hm(time_str: str) -> int:
+    """将 'HH:MM' 格式的时间字符串转换为从午夜起的分钟数。"""
+    h, m = time_str.split(":")
+    return int(h) * 60 + int(m)
+
+
+def _minutes_to_hm(minutes: int) -> str:
+    """将从午夜起的分钟数转换为 'HH:MM' 格式字符串。"""
+    return f"{minutes // 60:02d}:{minutes % 60:02d}"
+
+
+def _fill_time_window(plan: PlanSchema, intent: UserIntentSchema) -> PlanSchema:
+    """若方案结束时间早于 intent.time_window.end 超过 15 分钟，追加填充步骤。
+
+    填充步骤类型为 'activity'，使用预设的中文描述，不涉及具体 POI。
+    每次最多追加一个填充步骤；若填充后仍有剩余（>= 15 分钟），再追加下一个，
+    最多追加 len(_FILLER_STEP_OPTIONS) 个。
+    """
+    if intent.time_window.end is None:
+        return plan
+
+    window_end_minutes = _parse_hm(intent.time_window.end)
+
+    # 找到当前最后一个步骤的结束时间
+    if not plan.steps:
+        return plan
+
+    steps = list(plan.steps)
+    filler_index = 0
+
+    for _ in range(len(_FILLER_STEP_OPTIONS)):
+        last_step = steps[-1]
+        last_end_minutes = _parse_hm(last_step.end_time)
+        remaining = window_end_minutes - last_end_minutes
+
+        if remaining < 15:
+            break
+
+        if filler_index >= len(_FILLER_STEP_OPTIONS):
+            break
+
+        title, description = _FILLER_STEP_OPTIONS[filler_index]
+        filler_duration = min(remaining, 60)  # 单次填充最多 60 分钟
+        filler_end = last_end_minutes + filler_duration
+
+        filler_step = ItineraryStepSchema(
+            id=f"filler_{filler_index + 1}",
+            type="activity",
+            title=title,
+            poi_id=None,
+            start_time=_minutes_to_hm(last_end_minutes),
+            end_time=_minutes_to_hm(filler_end),
+            duration_minutes=filler_duration,
+            description=description,
+        )
+        steps.append(filler_step)
+        filler_index += 1
+
+    if len(steps) == len(plan.steps):
+        return plan  # 无需填充
+
+    new_total = _parse_hm(steps[-1].end_time) - _parse_hm(steps[0].start_time)
+    return plan.model_copy(update={
+        "steps": steps,
+        "total_duration_minutes": max(plan.total_duration_minutes, new_total),
+    })
+
+
+# ---------------------------------------------------------------------------
 # LLM 响应解析与方案构建
 # ---------------------------------------------------------------------------
 
@@ -232,6 +386,12 @@ def _plans_from_llm_response(
             plan = plan.model_copy(update={"title": plan_title})
         if plan_summary:
             plan = plan.model_copy(update={"summary": plan_summary})
+
+        # 将 _build_plan 生成的英文描述本地化为中文
+        plan = _localize_plan(plan, intent, extra, poi_map)
+
+        # 填充时间窗口：确保方案步骤覆盖完整时间窗口
+        plan = _fill_time_window(plan, intent)
 
         plans.append(plan)
 
@@ -301,7 +461,19 @@ class PlanningNode(BaseNode):
                 status="running",
                 message="LLM 生成失败，回退到规则方式生成方案...",
             ))
-            plans = self._fallback_generate(intent, retrieval)
+            fallback_plans = self._fallback_generate(intent, retrieval)
+            # 回退路径同样需要本地化和时间窗口填充
+            poi_map = {
+                poi.id: poi
+                for poi in [*retrieval.activities, *retrieval.restaurants]
+            }
+            plans = [
+                _fill_time_window(
+                    _localize_plan(p, intent, None, poi_map),
+                    intent,
+                )
+                for p in fallback_plans
+            ]
 
         # 为每个方案生成可执行动作列表
         plans = generate_actions(intent, plans)

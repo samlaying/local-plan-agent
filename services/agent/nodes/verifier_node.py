@@ -6,6 +6,7 @@ VerifierNode — 规则校验已生成的候选方案，决定是否通过。
   2. 距离约束     — 所有 POI 的 distance_km 在 intent.max_distance_km 以内
   3. 营业时间     — 所有 POI 在用户时间窗口内营业（复用 _is_open_for_window）
   4. 受众适配     — 所有 POI 的 audience_fit 满足 scenario 要求（复用 _matches_audience）
+  5. 评分门槛     — 所有 POI 的 rating 不低于 2.5（rating == 0 表示无评分数据，跳过检查）
 
 输出行为：
   - 全部通过：state.verifier_rejection_reasons 保持不变，返回 state
@@ -50,7 +51,7 @@ class VerifierNode(BaseNode):
         state.trace.append(TraceEvent(
             agent=self.name,
             status="running",
-            message="开始校验候选方案的时间、距离、营业时间和受众适配...",
+            message="开始校验候选方案的时间、距离、营业时间、受众适配和 POI 评分...",
         ))
 
         intent = state.intent
@@ -176,6 +177,20 @@ def _verify_plan(intent: UserIntentSchema, plan: PlanSchema) -> list[dict[str, A
                 "poi_name": poi.name,
                 "detail": (
                     f"{poi.name} audience_fit 不满足 scenario={intent.scenario} 要求"
+                ),
+            })
+
+    # 规则 5：评分门槛 — rating > 0 且 rating < 2.5 表示有实际评分数据但评分过低
+    _RATING_THRESHOLD = 2.5
+    for poi in plan.pois:
+        if 0 < poi.rating < _RATING_THRESHOLD:
+            violations.append({
+                "rule": "low_rating",
+                "poi_id": poi.id,
+                "poi_name": poi.name,
+                "detail": (
+                    f"{poi.name} 评分 {poi.rating}/5 低于最低门槛 {_RATING_THRESHOLD}，"
+                    "该地点口碑较差，已拒绝方案"
                 ),
             })
 
