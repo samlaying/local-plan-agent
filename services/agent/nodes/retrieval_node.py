@@ -32,10 +32,84 @@ from app.repositories.mock_poi_repository import MockPOIRepository
 from app.schemas.planning import POISchema, UserIntentSchema
 from app.services.activity_workflow import _is_open_for_window
 from agent.nodes.base import BaseNode
-from agent.state.types import PlanningState, RetrievalResult, TraceEvent
+from agent.state.types import PlanningState, RetrievalResult, SearchStrategy, TraceEvent
 from tools.poi.base import AbstractPOISearcher
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# 搜索策略定义
+# ---------------------------------------------------------------------------
+
+_STRATEGIES_BY_SCENARIO: dict[str, list[SearchStrategy]] = {
+    "family_weight_loss_child5": [
+        SearchStrategy(
+            style="户外自然",
+            activity_keywords="公园|广场|亲子|自然",
+            activity_types="110000|160000",
+            restaurant_keywords="健康轻食|儿童友好",
+        ),
+        SearchStrategy(
+            style="室内娱乐",
+            activity_keywords="亲子乐园|游乐|科技馆|博物",
+            activity_types="080000|140000",
+            restaurant_keywords="中式家常|快餐|儿童餐",
+        ),
+        SearchStrategy(
+            style="文化体验",
+            activity_keywords="博物馆|科学馆|展览|艺术",
+            activity_types="080000",
+            restaurant_keywords="博物馆餐厅|特色餐厅",
+        ),
+    ],
+    "friends_4_mixed_gender": [
+        SearchStrategy(
+            style="户外打卡",
+            activity_keywords="公园|景点|网红打卡",
+            activity_types="110000",
+            restaurant_keywords="网红餐厅|特色餐厅",
+        ),
+        SearchStrategy(
+            style="娱乐社交",
+            activity_keywords="密室|桌游|电影|KTV",
+            activity_types="060000|140000",
+            restaurant_keywords="火锅|烧烤",
+        ),
+        SearchStrategy(
+            style="文艺探索",
+            activity_keywords="展览|艺术|创意园区",
+            activity_types="080000",
+            restaurant_keywords="精品餐厅|咖啡馆",
+        ),
+    ],
+}
+
+_DEFAULT_STRATEGIES: list[SearchStrategy] = [
+    SearchStrategy(
+        style="综合推荐",
+        activity_keywords="公园|景点|休闲",
+        activity_types="110000|080000",
+        restaurant_keywords="餐厅|餐饮",
+    ),
+    SearchStrategy(
+        style="文化探索",
+        activity_keywords="博物馆|展览|艺术",
+        activity_types="080000",
+        restaurant_keywords="特色餐厅|咖啡",
+    ),
+    SearchStrategy(
+        style="运动休闲",
+        activity_keywords="运动|健身|户外",
+        activity_types="140000|110000",
+        restaurant_keywords="健康轻食|快餐",
+    ),
+]
+
+
+def _get_strategies(scenario: str) -> list[SearchStrategy]:
+    """根据场景返回对应的 3 个搜索策略，未知场景使用默认策略。"""
+    return _STRATEGIES_BY_SCENARIO.get(scenario, _DEFAULT_STRATEGIES)
 
 
 # ---------------------------------------------------------------------------
@@ -113,13 +187,32 @@ class RetrievalNode(BaseNode):
             route_info=route_info,
         )
 
+        # 多策略并行搜索：每个策略独立获取候选集，供 PlanningNode 独立规划
+        strategies = _get_strategies(intent.scenario)
+        strategy_tasks = [
+            asyncio.create_task(
+                self._fetch_strategy(intent, strategy, weather, route_info)
+            )
+            for strategy in strategies
+        ]
+        strategy_results = await asyncio.gather(*strategy_tasks)
+        state.retrieval_strategies = list(strategy_results)
+
+        logger.info(
+            "[%s] strategy retrieval done: %d strategies, sizes=%s",
+            self.name,
+            len(strategy_results),
+            [(len(r.activities), len(r.restaurants)) for r in strategy_results],
+        )
+
         state.trace.append(TraceEvent(
             agent=self.name,
             status="done",
             message=(
                 f"检索完成：{len(open_activities)} 个活动，{len(open_restaurants)} 个餐厅，"
                 f"天气：{weather}，"
-                f"{len(rejected)} 个 POI 因营业时间被排除"
+                f"{len(rejected)} 个 POI 因营业时间被排除，"
+                f"{len(strategy_results)} 个策略候选集已并行获取"
             ),
         ))
         logger.info(
@@ -290,3 +383,57 @@ class RetrievalNode(BaseNode):
                 })
 
         return open_activities, open_restaurants, rejected
+
+    # ------------------------------------------------------------------
+    # 策略搜索辅助
+    # ------------------------------------------------------------------
+
+    async def _fetch_strategy(
+        self,
+        intent: UserIntentSchema,
+        strategy: SearchStrategy,
+        weather: str,
+        route_info: dict[str, Any],
+    ) -> RetrievalResult:
+        """用单个策略并行搜索活动和餐厅，构建独立的 RetrievalResult。
+
+        调用 searcher.search_with_strategy（同步方法）放入线程池执行，避免阻塞 event loop。
+        营业时间检查复用 _check_business_hours，天气和路线信息复用已有数据（避免重复 IO）。
+        """
+        loop = asyncio.get_running_loop()
+
+        try:
+            activities, restaurants = await loop.run_in_executor(
+                None,
+                lambda: self._searcher.search_with_strategy(
+                    intent,
+                    strategy.activity_keywords,
+                    strategy.activity_types,
+                    strategy.restaurant_keywords,
+                    strategy.restaurant_types,
+                ),
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "[%s] _fetch_strategy(%r) failed: %s，降级使用空候选集",
+                self.name, strategy.style, exc,
+            )
+            activities, restaurants = [], []
+
+        # 营业时间过滤（复用已有逻辑）
+        open_activities, open_restaurants, rejected = await self._check_business_hours(
+            intent, activities, restaurants
+        )
+
+        logger.debug(
+            "[%s] strategy=%r: %d activities, %d restaurants, %d rejected",
+            self.name, strategy.style, len(open_activities), len(open_restaurants), len(rejected),
+        )
+
+        return RetrievalResult(
+            activities=open_activities,
+            restaurants=open_restaurants,
+            weather=weather,
+            route_info=route_info,
+            style=strategy.style,
+        )

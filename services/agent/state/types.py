@@ -20,6 +20,29 @@ from app.schemas.planning import ActionType, PlanSchema, POISchema, UserIntentSc
 
 
 # ---------------------------------------------------------------------------
+# SearchStrategy — 单次并行检索的搜索策略配置
+# ---------------------------------------------------------------------------
+
+class SearchStrategy(BaseModel):
+    """单个方案的搜索策略，描述用哪些关键词和 POI 类型搜索候选池。"""
+
+    style: str
+    """方案风格名，如"户外自然"，传给 RetrievalResult.style 和 LLM prompt。"""
+
+    activity_keywords: str
+    """高德 place/around 的 keywords 参数，如"公园|广场|亲子|自然"。"""
+
+    activity_types: str
+    """高德 POI 类型代码，如"110000|160000"。"""
+
+    restaurant_keywords: str
+    """餐厅搜索关键词，如"健康轻食|儿童友好"。"""
+
+    restaurant_types: str = "050000"
+    """固定餐饮服务类型代码（默认 050000），一般不需要改动。"""
+
+
+# ---------------------------------------------------------------------------
 # TraceEvent — 单条 Agent 执行记录，用于前端实时展示进度
 # ---------------------------------------------------------------------------
 
@@ -58,6 +81,8 @@ class RetrievalResult(BaseModel):
         description="因营业时间不覆盖用户时间窗口而被过滤的 POI 记录。"
         " 每条记录包含：poi_id、name、reason、business_hours、time_window。",
     )
+    style: str = ""
+    """来自 SearchStrategy.style，标识本结果集的风格，供 PlanningNode 参考。"""
 
 
 # ---------------------------------------------------------------------------
@@ -103,6 +128,9 @@ class PlanningState:
 
     # Retrieval 阶段
     retrieval: RetrievalResult | None = None
+
+    # Retrieval 阶段：每个搜索策略独立的候选集（多策略并行搜索时填充）
+    retrieval_strategies: list[RetrievalResult] = field(default_factory=list)
 
     # Planning 阶段：候选方案列表
     candidate_plans: list[PlanSchema] = field(default_factory=list)

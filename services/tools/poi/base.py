@@ -24,3 +24,28 @@ class AbstractPOISearcher(abc.ABC):
     def search_restaurants(self, intent: Any) -> list[Any]:
         """Return restaurant candidates (POISchema) that match the given planning intent."""
         ...
+
+    def search_with_strategy(
+        self,
+        intent: Any,
+        activity_keywords: str,
+        activity_types: str,
+        restaurant_keywords: str,
+        restaurant_types: str,
+    ) -> tuple[list[Any], list[Any]]:
+        """搜索指定策略的活动和餐厅候选。
+
+        默认实现忽略策略参数，直接调用 search_activities / search_restaurants。
+        AmapSearcher 会覆写此方法，利用 keywords / types 实际搜索不同风格的 POI。
+
+        Args:
+            intent:               UserIntentSchema，包含城市、距离、场景等约束。
+            activity_keywords:    活动搜索关键词（高德 place/around keywords 参数）。
+            activity_types:       活动 POI 类型代码（高德 types 参数）。
+            restaurant_keywords:  餐厅搜索关键词。
+            restaurant_types:     餐厅 POI 类型代码（通常固定为"050000"）。
+
+        Returns:
+            (activities, restaurants) — 两个 POISchema 列表。
+        """
+        return self.search_activities(intent), self.search_restaurants(intent)

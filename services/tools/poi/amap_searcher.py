@@ -102,6 +102,58 @@ class AmapSearcher(AbstractPOISearcher):
                 )
         return result
 
+    def search_with_strategy(
+        self,
+        intent: UserIntentSchema,
+        activity_keywords: str,
+        activity_types: str,
+        restaurant_keywords: str,
+        restaurant_types: str,
+    ) -> tuple[list[POISchema], list[POISchema]]:
+        """搜索指定策略的活动和餐厅候选（覆写基类默认实现）。
+
+        使用传入的 keywords / types 调用 AMap place/around，实现不同策略搜到
+        真正不同的 POI 候选集。异常处理与 search_activities / search_restaurants 保持一致。
+        """
+        location = self._geocode(intent.origin, intent.city)
+        radius_m = int(intent.max_distance_km * 1000)
+
+        # 活动搜索
+        raw_activities = self._search_around(
+            location=location,
+            keywords=activity_keywords,
+            types=activity_types,
+            radius_m=radius_m,
+        )
+        activities: list[POISchema] = []
+        for poi in raw_activities:
+            try:
+                activities.append(self._map_to_schema(poi, intent, is_restaurant=False))
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "search_with_strategy: skipping activity POI %s: %s",
+                    poi.get("id"), exc,
+                )
+
+        # 餐厅搜索
+        raw_restaurants = self._search_around(
+            location=location,
+            keywords=restaurant_keywords,
+            types=restaurant_types,
+            radius_m=radius_m,
+        )
+        restaurants: list[POISchema] = []
+        for poi in raw_restaurants:
+            try:
+                restaurants.append(self._map_to_schema(poi, intent, is_restaurant=True))
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "search_with_strategy: skipping restaurant POI %s: %s",
+                    poi.get("id"), exc,
+                )
+
+        return activities, restaurants
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
