@@ -38,7 +38,13 @@ class AmapSearcher(AbstractPOISearcher):
         self._api_key = api_key
 
     def search_activities(self, intent: Any) -> list[Any]:
-        raise NotImplementedError("TODO: implement AMap POI search for activities")
+        raise NotImplementedError(
+            "AmapSearcher.search_activities() is not yet implemented. "
+            "Set USE_MOCK_POI=true to use mock data, or implement this method."
+        )
 
     def search_restaurants(self, intent: Any) -> list[Any]:
-        raise NotImplementedError("TODO: implement AMap POI search for restaurants")
+        raise NotImplementedError(
+            "AmapSearcher.search_restaurants() is not yet implemented. "
+            "Set USE_MOCK_POI=true to use mock data, or implement this method."
+        )

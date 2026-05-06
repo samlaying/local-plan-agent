@@ -110,7 +110,7 @@ async def run_orchestrator(session: Session) -> None:
         intent_node = IntentParserNode(llm_client=llm_client)
         profile_repo = UserProfileRepository()
         profile_node = ProfileNode(repository=profile_repo)
-        use_mock_poi = os.getenv("USE_MOCK_POI", "true").lower() != "false"
+        use_mock_poi = os.getenv("USE_MOCK_POI", "true").lower() in ("true", "1", "yes")
         if use_mock_poi:
             poi_searcher = MockPOISearcher(repository=MockPOIRepository())
         else:
