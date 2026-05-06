@@ -14,6 +14,7 @@ import json
 import logging
 import os
 import re
+import time
 import urllib.parse
 import urllib.request
 from typing import Any
@@ -188,7 +189,19 @@ class AmapSearcher(AbstractPOISearcher):
         types: str,
         radius_m: int,
     ) -> list[dict[str, Any]]:
-        """Call AMap /v3/place/around and return the raw POI list."""
+        """Call AMap /v3/place/around and return the raw POI list.
+
+        Retries up to 3 times with incremental delays (0.5s / 1.0s / 1.5s) when
+        the API returns CUQPS_HAS_EXCEEDED_THE_LIMIT. Other non-1 statuses are
+        logged as warnings and return an empty list immediately.
+
+        This method is synchronous and runs inside run_in_executor, so
+        time.sleep() is safe here.
+        """
+        _QPS_ERROR = "CUQPS_HAS_EXCEEDED_THE_LIMIT"
+        _RETRY_DELAYS = [0.5, 1.0, 1.5]
+        _MAX_ATTEMPTS = len(_RETRY_DELAYS) + 1  # 1 initial + 3 retries
+
         params = {
             "location": location,
             "keywords": keywords,
@@ -201,16 +214,31 @@ class AmapSearcher(AbstractPOISearcher):
             "output": "JSON",
         }
         url = f"{self._base_url}/v3/place/around?" + urllib.parse.urlencode(params)
-        data = self._http_get(url)
 
-        if str(data.get("status")) != "1":
+        for attempt in range(_MAX_ATTEMPTS):
+            data = self._http_get(url)
+
+            if str(data.get("status")) == "1":
+                return data.get("pois") or []
+
+            info = data.get("info", "")
+            if info == _QPS_ERROR and attempt < _MAX_ATTEMPTS - 1:
+                delay = _RETRY_DELAYS[attempt]
+                logger.warning(
+                    "AMap place/around QPS limit hit (attempt %d/%d), retrying in %.1fs",
+                    attempt + 1, _MAX_ATTEMPTS, delay,
+                )
+                time.sleep(delay)
+                continue
+
+            # Non-QPS error or exhausted retries — log and give up
             logger.warning(
-                "AMap place/around returned status=%s info=%s",
-                data.get("status"), data.get("info"),
+                "AMap place/around returned status=%s info=%s (attempt %d/%d)",
+                data.get("status"), info, attempt + 1, _MAX_ATTEMPTS,
             )
             return []
 
-        return data.get("pois") or []
+        return []  # unreachable, satisfies type checker
 
     @staticmethod
     def _http_get(url: str) -> dict[str, Any]:

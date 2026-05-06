@@ -253,53 +253,41 @@ class RetrievalNode(BaseNode):
         activities: list[POISchema] = []
         restaurants: list[POISchema] = []
 
+        # ------ 初始化（循环外）：调用 LLM 生成初始关键词 ------
+        # 只在循环外调用一次，避免循环头重复调用导致"未搜索就 satisfied"的问题。
+        if self._llm_client is not None:
+            try:
+                response = await loop.run_in_executor(
+                    None,
+                    lambda: self._llm_client.chat(messages, json_mode=True),  # type: ignore[union-attr]
+                )
+                parsed = parse_json_response(response, required_fields=[])
+
+                if "activity_keywords" in parsed:
+                    activity_keywords = str(parsed["activity_keywords"])
+                if "activity_types" in parsed:
+                    activity_types = str(parsed["activity_types"])
+                if "restaurant_keywords" in parsed:
+                    restaurant_keywords = str(parsed["restaurant_keywords"])
+                if "restaurant_types" in parsed:
+                    restaurant_types = str(parsed["restaurant_types"])
+
+                # 将初始 LLM 响应追加到 messages（维护对话上下文）
+                messages.append(LLMMessage(role="assistant", content=response.content))
+
+            except LLMParseError as exc:
+                logger.warning(
+                    "[%s] strategy=%r init: LLM parse error: %s，使用默认关键词",
+                    self.name, style_hint, exc,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "[%s] strategy=%r init: LLM call error: %s，使用默认关键词",
+                    self.name, style_hint, exc,
+                )
+
         for iteration in range(max_iterations):
-            # ------ Step 1: 调用 LLM 获取关键词 ------
-            if self._llm_client is not None:
-                try:
-                    response = await loop.run_in_executor(
-                        None,
-                        lambda: self._llm_client.chat(messages, json_mode=True),  # type: ignore[union-attr]
-                    )
-                    parsed = parse_json_response(
-                        response,
-                        required_fields=[],  # 允许宽松解析
-                    )
-
-                    # 检查是否 satisfied（后续迭代中 LLM 确认满意）
-                    if parsed.get("satisfied") is True:
-                        logger.debug(
-                            "[%s] strategy=%r: LLM satisfied at iteration %d",
-                            self.name, style_hint, iteration,
-                        )
-                        break
-
-                    # 更新关键词（只取存在的字段）
-                    if "activity_keywords" in parsed:
-                        activity_keywords = str(parsed["activity_keywords"])
-                    if "activity_types" in parsed:
-                        activity_types = str(parsed["activity_types"])
-                    if "restaurant_keywords" in parsed:
-                        restaurant_keywords = str(parsed["restaurant_keywords"])
-                    if "restaurant_types" in parsed:
-                        restaurant_types = str(parsed["restaurant_types"])
-
-                    # 将 LLM 响应追加到 messages（维护对话上下文）
-                    messages.append(LLMMessage(role="assistant", content=response.content))
-
-                except LLMParseError as exc:
-                    logger.warning(
-                        "[%s] strategy=%r iteration=%d: LLM parse error: %s，使用当前关键词继续",
-                        self.name, style_hint, iteration, exc,
-                    )
-                    # 不追加到 messages，直接使用当前关键词搜索
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning(
-                        "[%s] strategy=%r iteration=%d: LLM call error: %s，使用当前关键词继续",
-                        self.name, style_hint, iteration, exc,
-                    )
-
-            # ------ Step 2: 使用关键词搜索 ------
+            # ------ Act：使用当前关键词搜索 ------
             try:
                 kw_act = activity_keywords
                 ty_act = activity_types
@@ -322,12 +310,20 @@ class RetrievalNode(BaseNode):
                 )
                 activities, restaurants = [], []
 
-            # ------ Step 3: 构造观察消息 ------
+            logger.debug(
+                "[%s] strategy=%r iteration=%d: %d activities, %d restaurants",
+                self.name, style_hint, iteration, len(activities), len(restaurants),
+            )
+
+            # ------ Observe：构造观察消息，追加到 messages ------
             observation = (
                 f"搜索结果：活动候选 {len(activities)} 条，餐厅候选 {len(restaurants)} 条。\n"
             )
-            if len(activities) >= _MIN_ACTIVITIES and len(restaurants) >= _MIN_RESTAURANTS:
-                observation += "候选数量充足，请确认是否满意（返回 {\"satisfied\": true}）。"
+            sufficient = (
+                len(activities) >= _MIN_ACTIVITIES and len(restaurants) >= _MIN_RESTAURANTS
+            )
+            if sufficient:
+                observation += "候选数量充足。"
             else:
                 shortage_parts: list[str] = []
                 if len(activities) < _MIN_ACTIVITIES:
@@ -341,57 +337,60 @@ class RetrievalNode(BaseNode):
 
             messages.append(LLMMessage(role="user", content=observation))
 
-            logger.debug(
-                "[%s] strategy=%r iteration=%d: %d activities, %d restaurants",
-                self.name, style_hint, iteration, len(activities), len(restaurants),
-            )
+            # 候选已充足，直接退出，无需再问 LLM（避免 LLM 否定充足结果）
+            if sufficient:
+                logger.debug(
+                    "[%s] strategy=%r: candidates sufficient at iteration %d, break",
+                    self.name, style_hint, iteration,
+                )
+                break
 
-            # 若已是最后一次迭代，不再调用 LLM 判断，直接退出
+            # 最后一次迭代，不再调用 LLM，直接退出
             if iteration == max_iterations - 1:
                 break
 
-            # ------ Step 4: 再次调用 LLM 判断是否满意 ------
-            if self._llm_client is not None:
-                try:
-                    response = await loop.run_in_executor(
-                        None,
-                        lambda: self._llm_client.chat(messages, json_mode=True),  # type: ignore[union-attr]
-                    )
-                    parsed = parse_json_response(response, required_fields=[])
-
-                    messages.append(LLMMessage(role="assistant", content=response.content))
-
-                    if parsed.get("satisfied") is True:
-                        logger.debug(
-                            "[%s] strategy=%r: LLM satisfied at iteration %d (post-search)",
-                            self.name, style_hint, iteration,
-                        )
-                        break
-
-                    # LLM 给出了新关键词，更新并继续
-                    if "activity_keywords" in parsed:
-                        activity_keywords = str(parsed["activity_keywords"])
-                    if "activity_types" in parsed:
-                        activity_types = str(parsed["activity_types"])
-                    if "restaurant_keywords" in parsed:
-                        restaurant_keywords = str(parsed["restaurant_keywords"])
-                    if "restaurant_types" in parsed:
-                        restaurant_types = str(parsed["restaurant_types"])
-
-                except LLMParseError as exc:
-                    logger.warning(
-                        "[%s] strategy=%r iteration=%d post-search: LLM parse error: %s，退出循环",
-                        self.name, style_hint, iteration, exc,
-                    )
-                    break
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning(
-                        "[%s] strategy=%r iteration=%d post-search: LLM call error: %s，退出循环",
-                        self.name, style_hint, iteration, exc,
-                    )
-                    break
-            else:
+            # ------ Think：调用 LLM 决策，获取新关键词或确认满意 ------
+            if self._llm_client is None:
                 # 无 LLM 客户端，单次搜索后直接退出
+                break
+
+            try:
+                response = await loop.run_in_executor(
+                    None,
+                    lambda: self._llm_client.chat(messages, json_mode=True),  # type: ignore[union-attr]
+                )
+                parsed = parse_json_response(response, required_fields=[])
+
+                messages.append(LLMMessage(role="assistant", content=response.content))
+
+                if parsed.get("satisfied") is True:
+                    logger.debug(
+                        "[%s] strategy=%r: LLM satisfied at iteration %d",
+                        self.name, style_hint, iteration,
+                    )
+                    break
+
+                # LLM 给出了新关键词，更新并继续下一轮搜索
+                if "activity_keywords" in parsed:
+                    activity_keywords = str(parsed["activity_keywords"])
+                if "activity_types" in parsed:
+                    activity_types = str(parsed["activity_types"])
+                if "restaurant_keywords" in parsed:
+                    restaurant_keywords = str(parsed["restaurant_keywords"])
+                if "restaurant_types" in parsed:
+                    restaurant_types = str(parsed["restaurant_types"])
+
+            except LLMParseError as exc:
+                logger.warning(
+                    "[%s] strategy=%r iteration=%d: LLM parse error: %s，退出循环",
+                    self.name, style_hint, iteration, exc,
+                )
+                break
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "[%s] strategy=%r iteration=%d: LLM call error: %s，退出循环",
+                    self.name, style_hint, iteration, exc,
+                )
                 break
 
         # ------ Step 5: 营业时间过滤 ------
