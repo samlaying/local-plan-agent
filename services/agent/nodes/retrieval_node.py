@@ -1,28 +1,20 @@
 """
-RetrievalNode — 并行检索活动、餐厅、天气、路线、营业时间信息。
+RetrievalNode — 并行获取天气/路线 + 3 个独立策略 ReAct 循环。
 
-并行执行 5 个子任务（asyncio.gather），将结果合并为 RetrievalResult 写入 state.retrieval。
+结构：
+  主路径（并行）：
+    - 天气查询    — mock，预留真实 API
+    - 路线距离    — 从 routes.json 读取，供 PlanningNode 参考
+    结果写入 state.retrieval（activities/restaurants 为空列表，仅 weather/route_info 有效）
 
-子任务：
-  1. 活动搜索    — 按 scenario 和 city 过滤活动类 POI
-  2. 餐厅搜索    — 按 scenario 和饮食要求过滤餐厅 POI
-  3. 天气查询    — mock：固定字符串，预留真实 API 接口
-  4. 路线距离    — 从 routes.json 或 POI.travel_minutes 整理路线信息
-  5. 营业时间检查 — 检查候选 POI 是否在用户时间窗口内营业，不营业的标记为 rejected
+  策略路径（3 个独立 LLM ReAct 循环，并行）：
+    每个循环持有完全隔离的 LLM 对话上下文：
+      1. LLM 根据 style_hint 和 intent 生成搜索关键词（循环外，只调用一次）
+      2. 用生成的关键词搜索 AMap（activity + restaurant）
+      3. 观察候选数量，候选充足则退出；不足则调用 LLM 调整关键词，最多 3 轮
+    结果写入 state.retrieval_strategies，PlanningNode 优先使用这些候选集
 
-节点在 state.trace 追加两条 TraceEvent：running（开始前）和 done（完成后）。
-
-多策略 ReAct 循环：
-  针对每个 style_hint（如"亲子户外"、"文化艺术"、"休闲社交"），启动一个独立上下文的
-  LLM ReAct 循环。LLM 先生成搜索关键词，执行搜索后观察结果，若候选数量不足则迭代
-  调整关键词，最多 3 轮。3 个策略并行运行，上下文完全隔离。
-
-同步 IO 处理：
-  MockPOIRepository 的方法（list_activities / list_restaurants / list_all）和
-  routes.json 的文件读取均为同步阻塞 IO。在 async def 协程中直接调用会阻塞
-  event loop，导致 asyncio.create_task 的"并行"实际串行执行。
-  修复方案：所有同步 IO 调用均通过 asyncio.get_running_loop().run_in_executor(None, ...)
-  放入默认线程池执行，实现真正的并发。
+  state.retrieval 仅作为 fallback（三个策略全挂时）和 weather/route_info 来源。
 """
 
 from __future__ import annotations
@@ -96,7 +88,7 @@ class RetrievalNode(BaseNode):
         state.trace.append(TraceEvent(
             agent=self.name,
             status="running",
-            message="开始并行检索活动、餐厅、天气、路线和营业时间...",
+            message="开始检索：天气、路线（并行）+ 3 个策略 ReAct 循环（并行）...",
         ))
 
         intent = state.intent
@@ -109,34 +101,20 @@ class RetrievalNode(BaseNode):
             logger.error("[%s] state.intent is None, skipping retrieval", self.name)
             return state
 
-        # 并行运行 5 个子任务
-        activities_task = asyncio.create_task(self._fetch_activities(intent))
-        restaurants_task = asyncio.create_task(self._fetch_restaurants(intent))
-        weather_task = asyncio.create_task(self._fetch_weather(intent))
-        routes_task = asyncio.create_task(self._fetch_routes(intent))
-        # 营业时间检查需要先拿到候选列表，必须等 activities/restaurants 完成
-        # 但为了真正并行，先让 activity/restaurant 任务同时跑，再单独做检查。
-        # 这里用 gather 等待前 4 个任务，再执行第 5 个（依赖前两个结果）。
-        activities, restaurants, weather, route_info = await asyncio.gather(
-            activities_task,
-            restaurants_task,
-            weather_task,
-            routes_task,
-        )
-
-        # 子任务 5：营业时间检查（在前两个结果已知后执行）
-        open_activities, open_restaurants, rejected = await self._check_business_hours(
-            intent, activities, restaurants
+        # 主路径：只保留天气和路线（POI 搜索完全交给策略路径）
+        weather, route_info = await asyncio.gather(
+            asyncio.create_task(self._fetch_weather(intent)),
+            asyncio.create_task(self._fetch_routes(intent)),
         )
 
         state.retrieval = RetrievalResult(
-            activities=open_activities,
-            restaurants=open_restaurants,
+            activities=[],
+            restaurants=[],
             weather=weather,
             route_info=route_info,
         )
 
-        # 多策略 ReAct 并行搜索：每个策略独立上下文，供 PlanningNode 独立规划
+        # 策略路径：3 个独立 ReAct 循环并行，各自用 LLM 生成关键词并搜索
         scenario = intent.scenario if intent.scenario else ""
         if scenario == "friends_4_mixed_gender":
             style_hints = ["户外打卡", "娱乐社交", "文艺探索"]
@@ -156,27 +134,26 @@ class RetrievalNode(BaseNode):
             r for r in strategy_results_raw if isinstance(r, RetrievalResult)
         ]
 
+        total_activities = sum(len(r.activities) for r in state.retrieval_strategies)
+        total_restaurants = sum(len(r.restaurants) for r in state.retrieval_strategies)
+
         logger.info(
-            "[%s] strategy retrieval done: %d strategies, sizes=%s",
+            "[%s] retrieval done: %d strategies, total activities=%d, total restaurants=%d",
             self.name,
             len(state.retrieval_strategies),
-            [(len(r.activities), len(r.restaurants)) for r in state.retrieval_strategies],
+            total_activities,
+            total_restaurants,
         )
 
         state.trace.append(TraceEvent(
             agent=self.name,
             status="done",
             message=(
-                f"检索完成：{len(open_activities)} 个活动，{len(open_restaurants)} 个餐厅，"
-                f"天气：{weather}，"
-                f"{len(rejected)} 个 POI 因营业时间被排除，"
-                f"{len(state.retrieval_strategies)} 个策略候选集已并行获取"
+                f"检索完成：{len(state.retrieval_strategies)} 个策略候选集，"
+                f"共 {total_activities} 个活动、{total_restaurants} 个餐厅，"
+                f"天气：{weather}"
             ),
         ))
-        logger.info(
-            "[%s] retrieval done: %d activities, %d restaurants, %d rejected",
-            self.name, len(open_activities), len(open_restaurants), len(rejected),
-        )
         return state
 
     # ------------------------------------------------------------------
@@ -410,52 +387,7 @@ class RetrievalNode(BaseNode):
         )
 
     # ------------------------------------------------------------------
-    # 子任务 1：活动搜索
-    # ------------------------------------------------------------------
-
-    async def _fetch_activities(self, intent: UserIntentSchema) -> list[POISchema]:
-        """通过注入的 searcher 获取活动候选列表。
-
-        searcher.search_activities() 是同步方法，用 run_in_executor 放入线程池
-        避免阻塞 event loop，实现与其他子任务的真正并发。
-        """
-        loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(
-            None, lambda: self._searcher.search_activities(intent)
-        )
-
-    # ------------------------------------------------------------------
-    # 子任务 2：餐厅搜索
-    # ------------------------------------------------------------------
-
-    async def _fetch_restaurants(self, intent: UserIntentSchema) -> list[POISchema]:
-        """通过注入的 searcher 获取餐厅候选列表，再叠加饮食要求过滤。
-
-        searcher.search_restaurants() 是同步方法，用 run_in_executor 放入线程池
-        避免阻塞 event loop，实现与其他子任务的真正并发。
-        """
-        loop = asyncio.get_running_loop()
-        candidates: list[POISchema] = await loop.run_in_executor(
-            None, lambda: self._searcher.search_restaurants(intent)
-        )
-
-        # 饮食要求过滤：diet_requirements 非空时，用 tags 匹配（与 searcher 无关的通用逻辑）
-        if intent.diet_requirements:
-            diet_tags = set(intent.diet_requirements)
-            candidates = [
-                poi for poi in candidates
-                if diet_tags.intersection(poi.tags)
-                # 若餐厅无任何饮食标签但 weight_loss_friendly 分数高，也放行
-                or (
-                    "weight_loss_friendly" in diet_tags
-                    and poi.audience_fit.weight_loss_friendly >= 70
-                )
-            ]
-
-        return candidates
-
-    # ------------------------------------------------------------------
-    # 子任务 3：天气查询（mock）
+    # 天气查询（mock）
     # ------------------------------------------------------------------
 
     async def _fetch_weather(self, intent: UserIntentSchema) -> str:  # noqa: ARG002
