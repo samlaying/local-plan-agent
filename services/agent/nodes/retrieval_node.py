@@ -48,19 +48,19 @@ _STRATEGIES_BY_SCENARIO: dict[str, list[SearchStrategy]] = {
             style="户外自然",
             activity_keywords="公园|广场|亲子|自然",
             activity_types="110000|160000",
-            restaurant_keywords="健康轻食|儿童友好",
+            restaurant_keywords="餐厅",
         ),
         SearchStrategy(
             style="室内娱乐",
             activity_keywords="亲子乐园|游乐|科技馆|博物",
             activity_types="080000|140000",
-            restaurant_keywords="中式家常|快餐|儿童餐",
+            restaurant_keywords="餐厅",
         ),
         SearchStrategy(
             style="文化体验",
             activity_keywords="博物馆|科学馆|展览|艺术",
             activity_types="080000",
-            restaurant_keywords="博物馆餐厅|特色餐厅",
+            restaurant_keywords="餐厅",
         ),
     ],
     "friends_4_mixed_gender": [
@@ -68,19 +68,19 @@ _STRATEGIES_BY_SCENARIO: dict[str, list[SearchStrategy]] = {
             style="户外打卡",
             activity_keywords="公园|景点|网红打卡",
             activity_types="110000",
-            restaurant_keywords="网红餐厅|特色餐厅",
+            restaurant_keywords="餐厅",
         ),
         SearchStrategy(
             style="娱乐社交",
             activity_keywords="密室|桌游|电影|KTV",
             activity_types="060000|140000",
-            restaurant_keywords="火锅|烧烤",
+            restaurant_keywords="餐厅",
         ),
         SearchStrategy(
             style="文艺探索",
             activity_keywords="展览|艺术|创意园区",
             activity_types="080000",
-            restaurant_keywords="精品餐厅|咖啡馆",
+            restaurant_keywords="餐厅",
         ),
     ],
 }
@@ -90,19 +90,19 @@ _DEFAULT_STRATEGIES: list[SearchStrategy] = [
         style="综合推荐",
         activity_keywords="公园|景点|休闲",
         activity_types="110000|080000",
-        restaurant_keywords="餐厅|餐饮",
+        restaurant_keywords="餐厅",
     ),
     SearchStrategy(
         style="文化探索",
         activity_keywords="博物馆|展览|艺术",
         activity_types="080000",
-        restaurant_keywords="特色餐厅|咖啡",
+        restaurant_keywords="餐厅",
     ),
     SearchStrategy(
         style="运动休闲",
         activity_keywords="运动|健身|户外",
         activity_types="140000|110000",
-        restaurant_keywords="健康轻食|快餐",
+        restaurant_keywords="餐厅",
     ),
 ]
 
