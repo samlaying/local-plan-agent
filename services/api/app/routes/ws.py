@@ -52,7 +52,7 @@ async def ws_planning(websocket: WebSocket) -> None:
     # 发送 session_ready，告知前端会话已就绪
     await websocket.send_json({
         "type": "session_ready",
-        "session_id": session_id,
+        "data": {"session_id": session_id},
         "ts": datetime.now(tz=timezone.utc).isoformat(),
     })
 

@@ -81,9 +81,11 @@ async def _run_node_and_stream(session: Session, node: Any) -> None:
             continue
         await _send(session, {
             "type": "trace",
-            "agent": event.agent,
-            "status": event.status,
-            "message": event.message,
+            "data": {
+                "agent": event.agent,
+                "status": event.status,
+                "message": event.message,
+            },
         })
 
 
@@ -142,7 +144,10 @@ async def run_orchestrator(session: Session) -> None:
         raise
     except Exception as exc:
         logger.exception("Orchestrator error for session %s: %s", session.session_id, exc)
-        await _send(session, {"type": "error", "message": str(exc)})
+        await _send(session, {
+            "type": "error",
+            "data": {"message": str(exc), "recoverable": False},
+        })
 
 
 # ---------------------------------------------------------------------------
@@ -202,15 +207,14 @@ async def _phase_intent(session: Session, intent_node: IntentParserNode) -> None
         # 发送追问给前端
         await _send(session, {
             "type": "ask",
-            "question": question,
-            "round": clarification_round,
+            "data": {"question": question, "round": clarification_round},
         })
 
         # 等待用户回复
         while True:
             msg = await _wait_message(session)
             if msg.get("type") == "user_reply":
-                user_reply = msg.get("text", "")
+                user_reply = msg.get("payload", {}).get("text", "")
                 # 将回复拼接到原始输入，供节点下一轮解析
                 session.state.raw_input = session.state.raw_input + " " + user_reply
                 break
@@ -276,9 +280,11 @@ async def _phase_retrieval_planning_loop(
         # 发送 trace 事件，告知用户正在重新规划
         await _send(session, {
             "type": "trace",
-            "agent": "orchestrator",
-            "status": "running",
-            "message": "正在根据您的反馈重新规划...",
+            "data": {
+                "agent": "orchestrator",
+                "status": "running",
+                "message": "正在根据您的反馈重新规划...",
+            },
         })
 
         logger.info(
@@ -358,8 +364,7 @@ async def _phase_send_plans_ready(session: Session) -> list[dict[str, Any]]:
 
     await _send(session, {
         "type": "plans_ready",
-        "plans": plans_data,
-        "intent": intent_data,
+        "data": {"plans": plans_data, "intent": intent_data},
     })
 
     return plans_data
@@ -386,7 +391,7 @@ async def _phase_plan_selection_raw(
         msg_type = msg.get("type")
 
         if msg_type == "plan_confirmed":
-            plan_id = msg.get("plan_id")
+            plan_id = msg.get("payload", {}).get("plan_id")
             confirmed = next(
                 (p for p in plans if p.get("id") == plan_id),
                 plans[0] if plans else None,
@@ -415,10 +420,12 @@ async def _phase_execution(
     actions = confirmed_plan.get("actions", [])
     await _send(session, {
         "type": "execution_preview",
-        "plan_id": confirmed_plan.get("id"),
-        "plan_title": confirmed_plan.get("title"),
-        "actions": actions,
-        "summary": f"即将执行 {len(actions)} 项操作，请确认",
+        "data": {
+            "plan_id": confirmed_plan.get("id"),
+            "plan_title": confirmed_plan.get("title"),
+            "actions": actions,
+            "summary": f"即将执行 {len(actions)} 项操作，请确认",
+        },
     })
 
     while True:
@@ -448,10 +455,10 @@ async def _phase_execution(
 
     await _send(session, {
         "type": "execution_result",
-        "plan_id": confirmed_plan.get("id"),
-        "results": execution_results,
-        "success_count": sum(1 for r in execution_results if r["success"]),
-        "total_count": len(execution_results),
+        "data": {
+            "results": execution_results,
+            "all_success": all(r["success"] for r in execution_results),
+        },
     })
 
     # FeedbackNode：fire-and-forget，在发 done 之前触发
@@ -464,37 +471,3 @@ async def _phase_execution(
         "reason": "execution_complete",
         "plan_id": confirmed_plan.get("id"),
     })
-
-
-def _build_mock_execution_results(actions: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """根据 actions 列表构建 mock 执行结果。"""
-    results: list[dict[str, Any]] = []
-    for action in actions:
-        action_type = action.get("type", "unknown")
-        if action_type == "navigation":
-            detail = "导航链接已生成（mock）"
-            success = True
-        elif action_type == "reservation":
-            detail = "预约已提交，等待商家确认（mock）"
-            success = True
-        elif action_type == "ticket":
-            detail = "票务已预订（mock）"
-            success = True
-        elif action_type == "queue":
-            detail = "已取号，预计等待时间见原行程（mock）"
-            success = True
-        elif action_type == "message":
-            detail = "行程摘要已生成，可手动分享"
-            success = True
-        else:
-            detail = f"{action_type} 动作已 mock 执行"
-            success = True
-
-        results.append({
-            "action_id": action.get("id"),
-            "action_type": action_type,
-            "title": action.get("title"),
-            "success": success,
-            "detail": detail,
-        })
-    return results
