@@ -63,8 +63,6 @@ async def _wait_message(session: Session) -> dict[str, Any]:
 async def _run_node_and_stream(session: Session, node: Any) -> None:
     """运行节点并将新增 trace 事件推送给前端。
 
-    跳过 `[clarification]` 前缀的事件（这些由 Orchestrator 单独处理为 ask 消息）。
-
     Args:
         session: 当前会话（含 state 和 send_json）。
         node: 实现 BaseNode.run(state) -> state 的节点实例。
@@ -74,11 +72,9 @@ async def _run_node_and_stream(session: Session, node: Any) -> None:
 
     await node.run(state)
 
-    # 推送本次节点新增的 trace 事件（跳过 clarification 事件）
+    # 推送本次节点新增的 trace 事件
     new_events = state.trace[trace_len_before:]
     for event in new_events:
-        if event.message.startswith("[clarification]"):
-            continue
         await _send(session, {
             "type": "trace",
             "data": {
@@ -87,18 +83,6 @@ async def _run_node_and_stream(session: Session, node: Any) -> None:
                 "message": event.message,
             },
         })
-
-
-def _extract_clarification(state: PlanningState) -> str | None:
-    """从 state.trace 中倒序扫描，找到最新的 [clarification] 事件并返回问题文本。
-
-    Returns:
-        去掉 `[clarification] ` 前缀后的问题文本；若未找到则返回 None。
-    """
-    for event in reversed(state.trace):
-        if event.message.startswith("[clarification]"):
-            return event.message[len("[clarification]"):].strip()
-    return None
 
 
 # ---------------------------------------------------------------------------
@@ -164,8 +148,8 @@ async def _phase_start(session: Session) -> None:
             location = payload.get("location", {})
             session.state.raw_input = query
             session.state.intent = None
-            # 将 location 暂存在 session 上供 Retrieval 使用
-            session._location_raw = location  # type: ignore[attr-defined]
+            # location 流入 PlanningState，由类型系统保证可见性
+            session.state.origin_location = location if location else None
             return
         logger.debug("Ignored message before start: %s", msg.get("type"))
 
@@ -195,10 +179,12 @@ async def _phase_intent(session: Session, intent_node: IntentParserNode) -> None
             )
             return
 
-        question = _extract_clarification(session.state)
+        question = session.state.pending_clarification
+        # 读完后清空，避免下一轮误读
+        session.state.pending_clarification = None
         if question is None:
             logger.warning(
-                "Session %s: intent is None but no clarification found in trace, "
+                "Session %s: intent is None but pending_clarification is not set, "
                 "proceeding without further clarification",
                 session.session_id,
             )

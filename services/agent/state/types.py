@@ -88,9 +88,15 @@ class PlanningState:
     session_id: str
     raw_input: str
 
+    # 用户出发地（来自 WebSocket start 消息的 location 字段）
+    origin_location: dict | None = None
+
     # Intent 阶段：追问槽位，最多追问 2 次
     intent_clarification_count: int = 0
     intent: UserIntentSchema | None = None
+
+    # Intent 阶段：待发送给用户的追问文本（节点写入，Orchestrator 读后清空）
+    pending_clarification: str | None = None
 
     # Profile 阶段
     profile: UserProfile | None = None

@@ -68,7 +68,7 @@ _SYSTEM_PROMPT = """\
 
 提取规则：
 1. origin（出发地）：用户提到的出发地点，如"人民广场"、"家"、"公司"。未提及则为 null。
-2. city（城市）：活动所在城市，默认"上海"，用户明确提及其他城市时使用用户城市。
+2. city（城市）：活动所在城市，默认"{default_city}"，用户明确提及其他城市时使用用户城市。
 3. date（日期）：活动日期（YYYY-MM-DD）。"今天"=当天，"明天"=明天，未提及则用今天的日期。
 4. start_time / end_time（HH:MM）：活动时间窗口。"上午"→09:30-14:30，"下午"→14:00-20:00，"晚上"→18:00-22:30，未提及则为 null。
 5. participants（人员列表）：
@@ -125,8 +125,13 @@ class IntentParserNode(BaseNode):
             message="开始解析用户意图…",
         ))
 
+        # 从 origin_location 取 city 作为默认城市（可被用户明确表达覆盖）
+        default_city = (
+            (state.origin_location or {}).get("city") or "上海"
+        )
+
         try:
-            raw_data = await self._call_llm(state.raw_input)
+            raw_data = await self._call_llm(state.raw_input, default_city=default_city)
         except LLMError as exc:
             logger.warning("intent_parser: LLM 调用失败: %s", exc)
             state.trace.append(TraceEvent(
@@ -152,11 +157,12 @@ class IntentParserNode(BaseNode):
             # 还有追问机会，记录追问
             clarification = raw_data.get("clarification_question") or _default_clarification(missing_slots)
             state.intent_clarification_count += 1
-            # 约定：把追问写进 trace，调用方（Orchestrator）负责读取并展示给用户
+            # 将追问文本写入专用字段，Orchestrator 读取后清空
+            state.pending_clarification = clarification
             state.trace.append(TraceEvent(
                 agent=self.name,
                 status="done",
-                message=f"[clarification] {clarification}",
+                message=f"需要追问用户（#{state.intent_clarification_count}），缺失槽位: {missing_slots}",
             ))
             logger.info(
                 "intent_parser: 追问 #%d，缺失槽位: %s",
@@ -185,10 +191,15 @@ class IntentParserNode(BaseNode):
         logger.info("intent_parser: 完成，scenario=%s", intent.scenario)
         return state
 
-    async def _call_llm(self, raw_input: str) -> dict[str, Any]:
-        """调用 LLM 并返回解析后的 dict。使用 run_in_executor 避免阻塞事件循环。"""
+    async def _call_llm(self, raw_input: str, default_city: str = "上海") -> dict[str, Any]:
+        """调用 LLM 并返回解析后的 dict。使用 run_in_executor 避免阻塞事件循环。
+
+        Args:
+            raw_input: 用户原始输入文本。
+            default_city: 默认城市，来自 state.origin_location.city（若有），否则为"上海"。
+        """
         today = date.today().isoformat()
-        system_content = _SYSTEM_PROMPT.format(today=today)
+        system_content = _SYSTEM_PROMPT.format(today=today, default_city=default_city)
 
         messages = [
             LLMMessage(role="system", content=system_content),

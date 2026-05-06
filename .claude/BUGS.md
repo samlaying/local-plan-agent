@@ -11,6 +11,9 @@
 | 2026-05-02 | Phase 1: user_reply 和 plan_confirmed 从 payload 而非顶层取字段 | e5b1692 |
 | 2026-05-02 | mock 数据城市名不一致（"Shanghai" → "上海"） | e5b1692 |
 | 2026-05-02 | 死代码 _build_mock_execution_results 已删除 | e5b1692 |
+| 2026-05-06 | IntentParserNode 追问通过 trace 传递（隐式协议）→ 改为 pending_clarification 显式字段 | 本次 |
+| 2026-05-06 | Orchestrator session._location_raw 非类型化 hack → location 写入 PlanningState.origin_location | 本次 |
+| 2026-05-06 | RetrievalNode 同步 IO 改为 run_in_executor 实现真正并发 | 本次 |
 | 2026-05-02 | Phase 1: TraceStatus 枚举（done/error）前后端已对齐 | 早期 |
 | 2026-05-02 | Phase 1: onExecutionPreview 触发 execution_confirm 状态转换 | 早期 |
 | 2026-05-02 | IntentParserNode: LLMError 未捕获 | 早期 |
@@ -27,16 +30,6 @@
 
 ## 待处理
 
-### [LOW] IntentParserNode 追问通过 trace 传递，隐式协议
-
-**位置**: `intent_parser.py` + `orchestrator.py`（`_extract_clarification`）
-
-**描述**: 追问文本以 `[clarification] <text>` 格式写入 `state.trace`，Orchestrator 扫描 trace 提取。
-这是隐式协议，重构时容易被意外破坏。
-
-**建议**: `PlanningState` 增加 `pending_clarification: str | None` 专用字段，节点直接写入，Orchestrator 读后清空。
-
----
 
 ### [LOW] WorkbenchContext canTransitionTo 非响应式
 
@@ -56,25 +49,7 @@
 
 ---
 
-### [MEDIUM] Orchestrator session._location_raw 非类型化 hack
 
-**位置**: `services/agent/workflow/orchestrator.py`，`_phase_start`
-
-**描述**: 客户端传来的 location dict 挂在 `session._location_raw`（Session 类无此字段，type: ignore）。目前 location 数据未被 RetrievalNode 真正使用（用户城市直接从 intent 解析），但结构上属于临时 hack。
-
-**建议**: location 存入 `PlanningState`（如 `origin_location` 字段），或由 IntentParserNode 从 raw_input 解析。
-
----
-
-### [MEDIUM] RetrievalNode 5 路并行实为同步 IO
-
-**位置**: `services/agent/nodes/retrieval_node.py`，`_fetch_activities` / `_fetch_restaurants` / `_fetch_routes`
-
-**描述**: 三个协程内部调用同步阻塞 IO（JSON 文件读取），不使用 `run_in_executor`，`asyncio.create_task` 并行运行的实际效果是串行。mock 数据量小，当前无感知。接入真实 DB/HTTP 后必须修复。
-
-**建议**: 用 `run_in_executor` 包裹同步调用，或改用 aiofiles。
-
----
 
 ### [LOW] MAX_PLAN_REVISION 未定义在 types.py
 
