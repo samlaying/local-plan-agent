@@ -1,20 +1,22 @@
 """
-RetrievalNode — 并行获取天气/路线 + 3 个独立策略 ReAct 循环。
+RetrievalNode — 并行获取天气/路线（主路径）+ 3 个独立策略 ReAct 循环（策略路径）。
 
-结构：
-  主路径（并行）：
-    - 天气查询    — mock，预留真实 API
-    - 路线距离    — 从 routes.json 读取，供 PlanningNode 参考
-    结果写入 state.retrieval（activities/restaurants 为空列表，仅 weather/route_info 有效）
+主路径（并行）：
+  - 天气查询    — mock，预留真实 API
+  - 路线信息    — 从 routes.json 读取静态路线（origin + static_routes）
+  结果写入 state.retrieval（activities/restaurants 为空列表，仅 weather/route_info 有效）
 
-  策略路径（3 个独立 LLM ReAct 循环，并行）：
-    每个循环持有完全隔离的 LLM 对话上下文：
-      1. LLM 根据 style_hint 和 intent 生成搜索关键词（循环外，只调用一次）
-      2. 用生成的关键词搜索 AMap（activity + restaurant）
-      3. 观察候选数量，候选充足则退出；不足则调用 LLM 调整关键词，最多 3 轮
-    结果写入 state.retrieval_strategies，PlanningNode 优先使用这些候选集
+策略路径（3 个独立 LLM ReAct 循环，并行）：
+  每个循环持有完全隔离的 LLM 对话上下文：
+    1. LLM 根据 style_hint 和 intent 生成搜索关键词（循环外调用一次）
+    2. 用生成的关键词搜索 AMap（activity + restaurant）
+    3. 观察候选数量，充足则退出；不足则调用 LLM 调整关键词，最多 3 轮
+  结果写入 state.retrieval_strategies，PlanningNode 优先使用这些候选集
 
-  state.retrieval 仅作为 fallback（三个策略全挂时）和 weather/route_info 来源。
+state.retrieval 仅作为三策略全挂时的 fallback 和 weather/route_info 来源。
+
+注意：各 POI 的出行时间（travel_minutes）直接存储在 POISchema 对象上，
+PlanningNode 序列化 POI 列表时直接读取，不依赖 route_info 中的任何映射。
 """
 
 from __future__ import annotations
@@ -52,14 +54,24 @@ _DEFAULT_RESTAURANT_TYPES = "050000"
 # ---------------------------------------------------------------------------
 
 class RetrievalNode(BaseNode):
-    """并行执行 5 个检索子任务，将结果合并为 RetrievalResult 写入 state.retrieval。
+    """主路径 + 策略路径并行检索节点，结果写入 state.retrieval / state.retrieval_strategies。
 
-    同时并行运行 3 个独立上下文的 LLM ReAct 策略循环，生成 retrieval_strategies。
+    主路径（并行）：
+      - 天气查询    — mock，预留真实 API
+      - 路线信息    — 从 routes.json 读取静态路线（origin + static_routes）
+
+    策略路径（3 个独立 LLM ReAct 循环，并行）：
+      每个循环拥有完全隔离的 LLM 对话上下文：
+        1. LLM 根据 style_hint 和 intent 生成搜索关键词（循环外调用一次）
+        2. 用生成的关键词搜索 AMap（activity + restaurant）
+        3. 观察候选数量，充足则退出；不足则 LLM 调整关键词，最多 3 轮
+      结果写入 state.retrieval_strategies，PlanningNode 优先使用这些候选集。
+
+    state.retrieval 仅作为三策略全挂时的 fallback 和 weather/route_info 来源。
 
     依赖注入：
       searcher    — AbstractPOISearcher（MockPOISearcher 或 AmapSearcher）
       llm_client  — LLMClient（用于策略 ReAct 循环中动态生成关键词）
-      repository  — MockPOIRepository（或后续真实 POI 适配器）
       routes_path — routes.json 文件路径；None 时自动从项目根目录推断
     """
 
@@ -72,7 +84,7 @@ class RetrievalNode(BaseNode):
     ) -> None:
         self._searcher = searcher
         self._llm_client = llm_client
-        self._repository = repository or MockPOIRepository()
+        # repository 参数保留以维持向后兼容的构造函数签名，当前实现未使用
         self._routes_path = routes_path or self._default_routes_path()
 
     @staticmethod
@@ -404,24 +416,22 @@ class RetrievalNode(BaseNode):
     # ------------------------------------------------------------------
 
     async def _fetch_routes(self, intent: UserIntentSchema) -> dict[str, Any]:
-        """从 routes.json 整理路线信息，并补充 POI 的 travel_minutes 字段数据。
+        """从 routes.json 读取静态路线信息。
 
-        routes.json 文件读取和 list_all() 均为同步 IO，通过 run_in_executor 放入
-        线程池执行，避免阻塞 event loop。
+        routes.json 文件读取为同步 IO，通过 run_in_executor 放入线程池执行，
+        避免阻塞 event loop。
 
         返回格式：
         {
           "origin": "...",
-          "static_routes": [...],          # routes.json 原始条目
-          "poi_travel_minutes": {          # poi_id -> travel_minutes（来自 POI 字段）
-              "family_activity_001": 14,
-              ...
-          }
+          "static_routes": [...],   # routes.json 原始条目
         }
+
+        注意：此处不再构建 poi_id → travel_minutes 映射。各 POI 的出行时间
+        直接存储在 POISchema.travel_minutes 字段上，PlanningNode 在序列化 POI
+        列表时直接读取该字段，无需通过 route_info 中转。
         """
         loop = asyncio.get_running_loop()
-
-        # 读取 routes.json（同步文件 IO，放入线程池）
         routes_path = self._routes_path
 
         def _load_routes() -> list[dict[str, Any]]:
@@ -435,26 +445,11 @@ class RetrievalNode(BaseNode):
                 logger.warning("[%s] routes.json parse error: %s", self.name, exc)
                 return []
 
-        # list_all() 也是同步 IO（读两个 JSON 文件），同样放入线程池
-        def _load_all_pois() -> list[POISchema]:
-            return self._repository.list_all()
-
-        static_routes, all_pois = await asyncio.gather(
-            loop.run_in_executor(None, _load_routes),
-            loop.run_in_executor(None, _load_all_pois),
-        )
-
-        # 从所有 POI 的 travel_minutes 字段汇总（按出发地 origin 整理）
-        poi_travel_minutes: dict[str, int] = {
-            poi.id: poi.travel_minutes
-            for poi in all_pois
-            if intent.scenario in poi.suitable_scenarios and poi.city == intent.city
-        }
+        static_routes = await loop.run_in_executor(None, _load_routes)
 
         return {
             "origin": intent.origin,
             "static_routes": static_routes,
-            "poi_travel_minutes": poi_travel_minutes,
         }
 
     # ------------------------------------------------------------------

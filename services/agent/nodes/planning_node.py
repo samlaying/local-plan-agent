@@ -213,6 +213,8 @@ def _build_user_message_single(
     intent: UserIntentSchema,
     retrieval: RetrievalResult,
     style: str,
+    rejection_reason: str | None = None,
+    preference_adjustments: list[str] | None = None,
 ) -> str:
     """构建单策略 LLM 调用的用户消息，包含风格说明，要求只生成 1 个方案。"""
     parts: list[str] = []
@@ -236,6 +238,13 @@ def _build_user_message_single(
     parts.append(_serialize_poi_list(retrieval.activities, "活动"))
     parts.append("\n")
     parts.append(_serialize_poi_list(retrieval.restaurants, "餐厅"))
+
+    if rejection_reason:
+        parts.append(_REJECTION_HINT_TEMPLATE.format(reason=rejection_reason))
+
+    if preference_adjustments:
+        adjustments_text = "\n".join(f"- {item}" for item in preference_adjustments)
+        parts.append(_PREFERENCE_ADJUSTMENTS_TEMPLATE.format(adjustments=adjustments_text))
 
     parts.append("\n请从以上候选列表中选出 1 个最优方案，以 JSON 格式返回。")
     return "".join(parts)
@@ -512,9 +521,17 @@ class PlanningNode(BaseNode):
             ))
             return state
 
+        rejection_reason = state.verifier_rejection_reason
+        preference_adjustments = state.preference_adjustments or None
+
         if state.retrieval_strategies:
             # 新路径：每个策略独立生成 1 个方案，并行执行
-            plans = await self._plan_from_strategies(intent, state.retrieval_strategies)
+            plans = await self._plan_from_strategies(
+                intent,
+                state.retrieval_strategies,
+                rejection_reason,
+                preference_adjustments,
+            )
         else:
             # 旧路径：从单一候选池让 LLM 选出 2-3 个方案（向后兼容）
             if retrieval is None:
@@ -527,31 +544,56 @@ class PlanningNode(BaseNode):
             plans = await self._generate_with_llm(
                 intent,
                 retrieval,
-                state.verifier_rejection_reason,
-                state.preference_adjustments,
+                rejection_reason,
+                preference_adjustments,
             )
 
-        if not plans and retrieval is not None:
-            # LLM 路径失败，回退到规则方式（仅旧路径有 retrieval 可用）
-            logger.info("PlanningNode: LLM 路径未产生有效方案，回退到规则生成")
-            state.trace.append(TraceEvent(
-                agent=self.name,
-                status="running",
-                message="LLM 生成失败，回退到规则方式生成方案...",
-            ))
-            fallback_plans = self._fallback_generate(intent, retrieval)
-            # 回退路径同样需要本地化和时间窗口填充
-            poi_map = {
-                poi.id: poi
-                for poi in [*retrieval.activities, *retrieval.restaurants]
-            }
-            plans = [
-                _fill_time_window(
-                    _localize_plan(p, intent, None, poi_map),
-                    intent,
+        if not plans:
+            # LLM 路径失败，回退到规则方式
+            # 多策略路径：从 retrieval_strategies 聚合所有候选 POI 构造合并候选池
+            # 旧路径：直接使用 state.retrieval
+            if state.retrieval_strategies:
+                merged_activities: list = []
+                merged_restaurants: list = []
+                seen_ids: set[str] = set()
+                for strategy in state.retrieval_strategies:
+                    for poi in strategy.activities:
+                        if poi.id not in seen_ids:
+                            merged_activities.append(poi)
+                            seen_ids.add(poi.id)
+                    for poi in strategy.restaurants:
+                        if poi.id not in seen_ids:
+                            merged_restaurants.append(poi)
+                            seen_ids.add(poi.id)
+                fallback_retrieval = RetrievalResult(
+                    activities=merged_activities,
+                    restaurants=merged_restaurants,
                 )
-                for p in fallback_plans
-            ]
+            elif retrieval is not None:
+                fallback_retrieval = retrieval
+            else:
+                fallback_retrieval = None
+
+            if fallback_retrieval is not None:
+                logger.info("PlanningNode: LLM 路径未产生有效方案，回退到规则生成")
+                state.trace.append(TraceEvent(
+                    agent=self.name,
+                    status="running",
+                    message="LLM 生成失败，回退到规则方式生成方案...",
+                ))
+                fallback_plans = self._fallback_generate(intent, fallback_retrieval)
+                # 回退路径同样需要本地化和时间窗口填充
+                poi_map = {
+                    poi.id: poi
+                    for poi in [*fallback_retrieval.activities, *fallback_retrieval.restaurants]
+                }
+                plans = [
+                    _fill_time_window(
+                        _localize_plan(p, intent, None, poi_map),
+                        intent,
+                    )
+                    for p in fallback_plans
+                ]
 
         # 为每个方案生成可执行动作列表
         plans = generate_actions(intent, plans)
@@ -623,6 +665,8 @@ class PlanningNode(BaseNode):
         self,
         intent: UserIntentSchema,
         retrieval_result: RetrievalResult,
+        rejection_reason: str | None = None,
+        preference_adjustments: list[str] | None = None,
     ) -> list[PlanSchema]:
         """针对单个 RetrievalResult（含 style）调用 LLM，要求只生成 1 个最优方案。
 
@@ -633,7 +677,10 @@ class PlanningNode(BaseNode):
             LLMMessage(role="system", content=_SINGLE_PLAN_SYSTEM_PROMPT),
             LLMMessage(
                 role="user",
-                content=_build_user_message_single(intent, retrieval_result, style),
+                content=_build_user_message_single(
+                    intent, retrieval_result, style,
+                    rejection_reason, preference_adjustments,
+                ),
             ),
         ]
 
@@ -673,17 +720,30 @@ class PlanningNode(BaseNode):
         self,
         intent: UserIntentSchema,
         retrieval_strategies: list[RetrievalResult],
+        rejection_reason: str | None = None,
+        preference_adjustments: list[str] | None = None,
     ) -> list[PlanSchema]:
         """并行对每个搜索策略调用 LLM，各自生成 1 个方案，合并为候选列表。"""
         tasks = [
-            self._call_llm_single_plan(intent, strategy)
+            self._call_llm_single_plan(
+                intent, strategy, rejection_reason, preference_adjustments
+            )
             for strategy in retrieval_strategies
         ]
-        results_per_strategy: list[list[PlanSchema]] = await asyncio.gather(*tasks)
+        results_per_strategy: list[list[PlanSchema] | BaseException] = (
+            await asyncio.gather(*tasks, return_exceptions=True)
+        )
 
         plans: list[PlanSchema] = []
-        for strategy_plans in results_per_strategy:
-            plans.extend(strategy_plans)
+        for idx, result in enumerate(results_per_strategy):
+            if isinstance(result, BaseException):
+                logger.warning(
+                    "PlanningNode: 策略 %r 的并行调用抛出未捕获异常，跳过: %s",
+                    retrieval_strategies[idx].style,
+                    result,
+                )
+                continue
+            plans.extend(result)
 
         return plans
 

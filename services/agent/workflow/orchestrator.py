@@ -457,9 +457,21 @@ async def _phase_execution(
     })
 
     # FeedbackNode：fire-and-forget，在发 done 之前触发
+    # 不 await，避免阻塞 done 消息发送；但加 done callback 确保异常不静默丢失。
+    def _on_feedback_done(task: asyncio.Task) -> None:
+        exc = task.exception() if not task.cancelled() else None
+        if exc is not None:
+            logger.warning(
+                "FeedbackNode task failed (session=%s): %s",
+                session.session_id,
+                exc,
+                exc_info=exc,
+            )
+
     feedback_repo = UserProfileRepository()
     feedback_node = FeedbackNode(repository=feedback_repo)
-    asyncio.create_task(feedback_node.run(session.state))
+    feedback_task = asyncio.create_task(feedback_node.run(session.state))
+    feedback_task.add_done_callback(_on_feedback_done)
 
     await _send(session, {
         "type": "done",

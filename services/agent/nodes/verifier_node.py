@@ -155,6 +155,10 @@ def _verify_plan(intent: UserIntentSchema, plan: PlanSchema) -> list[dict[str, A
             })
 
     # 规则 3：营业时间（复用 activity_workflow._is_open_for_window）
+    # 注意：RetrievalNode 的策略 ReAct 循环在返回候选集之前已经做过一轮营业时间过滤
+    # （_check_business_hours），两处使用同一个函数 _is_open_for_window。
+    # 此处是兜底保险层：正常情况下不会额外拦截，仅防止极少数边界情况（如候选集
+    # 被跨节点修改或 mock 数据异常）导致不营业的 POI 渗透到方案中。
     for poi in plan.pois:
         if not _is_open_for_window(poi, intent):
             violations.append({
