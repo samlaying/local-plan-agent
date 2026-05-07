@@ -356,7 +356,7 @@ class VerifierNode(BaseNode):
                 p for p in state.candidate_plans if p.id not in failed_ids
             ]
             state.plan_revision_count += 1
-            state.verifier_rejection_reasons.extend(hard_rejection_batch)
+            state.verifier_rejection_reasons.append(hard_rejection_batch)
 
             state.trace.append(TraceEvent(
                 agent=self.name,
@@ -421,7 +421,7 @@ class VerifierNode(BaseNode):
                 p for p in state.candidate_plans if p.id not in failed_ids
             ]
             state.plan_revision_count += 1
-            state.verifier_rejection_reasons.extend(llm_rejection_batch)
+            state.verifier_rejection_reasons.append(llm_rejection_batch)
 
             state.trace.append(TraceEvent(
                 agent=self.name,

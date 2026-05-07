@@ -25,14 +25,11 @@ from app.schemas.planning import (
     UserIntentSchema,
 )
 from agent.nodes.base import BaseNode
-from agent.state.types import PlanningState, TraceEvent
+from agent.state.types import MAX_CLARIFICATION_COUNT, PlanningState, TraceEvent
 from llm.base import LLMClient, LLMError, LLMMessage
 from llm.structured_output import LLMParseError, append_json_instruction, parse_json_response
 
 logger = logging.getLogger(__name__)
-
-# 最大追问次数（与 PlanningState.intent_clarification_count 联动）
-MAX_CLARIFICATION_COUNT = 2
 
 # LLM 提取意图的 JSON 结构说明（用于 build_json_instruction）
 _INTENT_SCHEMA_DESCRIPTION = (

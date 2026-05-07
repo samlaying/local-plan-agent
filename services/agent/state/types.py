@@ -18,6 +18,13 @@ from pydantic import BaseModel, Field
 # 复用已有类型
 from app.schemas.planning import ActionType, PlanSchema, POISchema, UserIntentSchema
 
+# ---------------------------------------------------------------------------
+# 共享常量
+# ---------------------------------------------------------------------------
+
+# Intent 阶段最大追问次数（Orchestrator 和 IntentParserNode 共享此常量）
+MAX_CLARIFICATION_COUNT = 2
+
 
 # ---------------------------------------------------------------------------
 # SearchStrategy — 单次并行检索的搜索策略配置
@@ -139,8 +146,9 @@ class PlanningState:
     plan_revision_count: int = 0
 
     # Verifier 阶段：记录拒绝原因，供 Planning Node 重试时参考
-    # 每次 Verifier 拒绝后追加一批 dict，格式：{plan_id, plan_title, violations: [...]}
-    verifier_rejection_reasons: list[dict[str, Any]] = field(default_factory=list)
+    # 外层列表每个元素是一次 Verifier 运行的拒绝批次（list[dict]）
+    # 格式：[[{plan_id, plan_title, violations: [...]}, ...], ...]
+    verifier_rejection_reasons: list[list[dict[str, Any]]] = field(default_factory=list)
 
     # 用户确认的方案
     confirmed_plan: PlanSchema | None = None
@@ -169,7 +177,7 @@ class PlanningState:
             return None
 
         # 取最后一批（最近一次 Verifier 运行的结果）
-        last_batch = self.verifier_rejection_reasons[-1:]
+        last_batch = self.verifier_rejection_reasons[-1]
         parts: list[str] = []
         for rejection in last_batch:
             plan_id = rejection.get("plan_id", "unknown")

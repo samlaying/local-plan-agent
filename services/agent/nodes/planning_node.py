@@ -723,29 +723,62 @@ class PlanningNode(BaseNode):
         rejection_reason: str | None = None,
         preference_adjustments: list[str] | None = None,
     ) -> list[PlanSchema]:
-        """并行对每个搜索策略调用 LLM，各自生成 1 个方案，合并为候选列表。"""
+        """并行对每个搜索策略调用 LLM，各自生成 1 个方案，合并为候选列表。
+
+        每个策略的方案 ID 包含策略序号（plan_s0_1、plan_s1_1、plan_s2_1），
+        保证跨策略 ID 全局唯一，同时允许 _plan_from_strategies 在重试时
+        通过 ID 前缀将 rejection reason 精确路由回对应策略（Bug 4 修复）。
+        """
         tasks = [
             self._call_llm_single_plan(
-                intent, strategy, rejection_reason, preference_adjustments
+                intent,
+                strategy,
+                self._filter_rejection_reason_for_strategy(
+                    rejection_reason, strategy_idx
+                ),
+                preference_adjustments,
             )
-            for strategy in retrieval_strategies
+            for strategy_idx, strategy in enumerate(retrieval_strategies)
         ]
         results_per_strategy: list[list[PlanSchema] | BaseException] = (
             await asyncio.gather(*tasks, return_exceptions=True)
         )
 
         plans: list[PlanSchema] = []
-        for idx, result in enumerate(results_per_strategy):
+        for strategy_idx, result in enumerate(results_per_strategy):
             if isinstance(result, BaseException):
                 logger.warning(
                     "PlanningNode: 策略 %r 的并行调用抛出未捕获异常，跳过: %s",
-                    retrieval_strategies[idx].style,
+                    retrieval_strategies[strategy_idx].style,
                     result,
                 )
                 continue
-            plans.extend(result)
+            for local_idx, plan in enumerate(result, start=1):
+                # 赋予含策略序号的 ID，使跨策略计划 ID 全局唯一
+                strategy_scoped_id = f"plan_s{strategy_idx}_{local_idx}"
+                plans.append(plan.model_copy(update={"id": strategy_scoped_id}))
 
         return plans
+
+    @staticmethod
+    def _filter_rejection_reason_for_strategy(
+        rejection_reason: str | None,
+        strategy_idx: int,
+    ) -> str | None:
+        """从全局 rejection_reason 字符串中过滤出属于指定策略的行。
+
+        每行格式为"方案 plan_sN_M（...）：..."，只保留 N == strategy_idx 的行。
+        若过滤后无内容，返回 None（不向该策略传递不相关的拒绝原因）。
+        """
+        if not rejection_reason:
+            return None
+
+        prefix = f"plan_s{strategy_idx}_"
+        relevant_lines = [
+            line for line in rejection_reason.splitlines()
+            if prefix in line
+        ]
+        return "\n".join(relevant_lines) if relevant_lines else None
 
     # ------------------------------------------------------------------
     # 规则降级路径
