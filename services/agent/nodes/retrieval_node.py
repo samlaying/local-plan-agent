@@ -10,7 +10,8 @@ RetrievalNode — 并行获取天气/路线（主路径）+ 3 个独立策略 Re
   每个循环持有完全隔离的 LLM 对话上下文：
     1. LLM 根据 style_hint 和 intent 生成搜索关键词（循环外调用一次）
     2. 用生成的关键词搜索 AMap（activity + restaurant）
-    3. 观察候选数量，充足则退出；不足则调用 LLM 调整关键词，最多 3 轮
+    3. 把所有候选 POI 的关键字段序列化后喂给 LLM，由 LLM 判断是否满意；
+       LLM 返回 satisfied=true 时退出，否则给出新关键词继续搜，最多 3 轮
   结果写入 state.retrieval_strategies，PlanningNode 优先使用这些候选集
 
 state.retrieval 仅作为三策略全挂时的 fallback 和 weather/route_info 来源。
@@ -38,10 +39,6 @@ from tools.poi.base import AbstractPOISearcher
 
 logger = logging.getLogger(__name__)
 
-# 策略关键词不足时的默认阈值
-_MIN_ACTIVITIES = 3
-_MIN_RESTAURANTS = 2
-
 # 默认关键词（LLM 解析失败时使用）
 _DEFAULT_ACTIVITY_KEYWORDS = "景点|公园|休闲"
 _DEFAULT_ACTIVITY_TYPES = "110000|080000"
@@ -64,7 +61,8 @@ class RetrievalNode(BaseNode):
       每个循环拥有完全隔离的 LLM 对话上下文：
         1. LLM 根据 style_hint 和 intent 生成搜索关键词（循环外调用一次）
         2. 用生成的关键词搜索 AMap（activity + restaurant）
-        3. 观察候选数量，充足则退出；不足则 LLM 调整关键词，最多 3 轮
+        3. 把所有候选 POI 的关键字段序列化后喂给 LLM，由 LLM 判断是否满意；
+         LLM 返回 satisfied=true 时退出，否则给出新关键词继续搜，最多 3 轮
       结果写入 state.retrieval_strategies，PlanningNode 优先使用这些候选集。
 
     state.retrieval 仅作为三策略全挂时的 fallback 和 weather/route_info 来源。
@@ -86,6 +84,49 @@ class RetrievalNode(BaseNode):
         self._llm_client = llm_client
         # repository 参数保留以维持向后兼容的构造函数签名，当前实现未使用
         self._routes_path = routes_path or self._default_routes_path()
+
+    # ------------------------------------------------------------------
+    # 内部辅助：POI 列表序列化为可读文本（供 Observe 步骤使用）
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _serialize_candidates(
+        activities: list[POISchema],
+        restaurants: list[POISchema],
+    ) -> str:
+        """将活动和餐厅候选列表序列化为简洁可读的文本，供 LLM Observe 步骤使用。
+
+        序列化字段：名称、类别、评分、距离（km）、营业时间、推荐游玩时长（min）。
+        """
+        lines: list[str] = []
+
+        if activities:
+            lines.append(f"【活动候选 {len(activities)} 条】")
+            for i, poi in enumerate(activities, 1):
+                lines.append(
+                    f"  {i}. {poi.name}（{poi.subcategory}）"
+                    f" | 评分 {poi.rating}/5"
+                    f" | 距离 {poi.distance_km:.1f}km"
+                    f" | 营业 {poi.business_hours.open}–{poi.business_hours.close}"
+                    f" | 推荐游玩 {poi.recommended_duration_minutes}min"
+                )
+        else:
+            lines.append("【活动候选 0 条】")
+
+        if restaurants:
+            lines.append(f"【餐厅候选 {len(restaurants)} 条】")
+            for i, poi in enumerate(restaurants, 1):
+                lines.append(
+                    f"  {i}. {poi.name}（{poi.subcategory}）"
+                    f" | 评分 {poi.rating}/5"
+                    f" | 距离 {poi.distance_km:.1f}km"
+                    f" | 营业 {poi.business_hours.open}–{poi.business_hours.close}"
+                    f" | 推荐游玩 {poi.recommended_duration_minutes}min"
+                )
+        else:
+            lines.append("【餐厅候选 0 条】")
+
+        return "\n".join(lines)
 
     @staticmethod
     def _default_routes_path() -> Path:
@@ -183,10 +224,13 @@ class RetrievalNode(BaseNode):
         流程：
           1. 初始化 messages（system + user），请 LLM 生成搜索关键词
           2. 调用 LLM，解析返回的关键词 JSON
-          3. 并行搜索活动和餐厅候选
-          4. 将观察结果追加到 messages，请 LLM 判断是否满意
-          5. 若满意或达到上限 → 退出；否则用 LLM 返回的新关键词继续迭代
+          3. 用关键词搜索活动和餐厅候选
+          4. 把全部候选 POI 的关键字段序列化后追加到 messages，请 LLM 判断是否满意
+          5. LLM 返回 satisfied=true → 退出；返回新关键词 → 继续迭代；达到上限 → 退出
           6. 对最终结果做营业时间过滤，返回 RetrievalResult
+
+        LLM 是唯一的质量仲裁者：代码不再依据数量硬性判断是否充足，
+        而是把完整候选列表喂给 LLM，由 LLM 判断"结果够不够、风格对不对"。
 
         Args:
             intent:         用户规划意图，包含城市、场景、时间窗口、人数等。
@@ -207,8 +251,11 @@ class RetrievalNode(BaseNode):
             '  "activity_types"     — 高德 POI 类型代码（用 | 分隔，如"110000|080000"）\n'
             '  "restaurant_keywords"— 餐厅搜索关键词（如"亲子友好|健康轻食"）\n'
             '  "restaurant_types"   — 餐厅 POI 类型代码（通常为"050000"）\n'
-            "当你对搜索结果满意时，返回：{\"satisfied\": true}\n"
-            "当你需要调整关键词时，返回新的关键词 JSON（同上格式）。\n"
+            "每轮搜索结束后，你会收到所有候选 POI 的详情列表（名称、类别、评分、距离、营业时间、推荐游玩时长）。\n"
+            f"请仔细阅读候选列表，综合判断：这批候选的数量和质量是否足以支撑「{style_hint}」风格的完整行程规划？\n"
+            "判断要点：候选数量是否充足、评分和品类是否符合该风格、是否有足够选择余地。\n"
+            "如果满意，返回：{\"satisfied\": true}\n"
+            "如果不满意（数量不足、评分偏低、风格不符等），返回新的关键词 JSON（同上格式）并说明调整原因。\n"
             "不要包含任何其他内容，直接返回纯 JSON。"
         )
 
@@ -304,37 +351,18 @@ class RetrievalNode(BaseNode):
                 self.name, style_hint, iteration, len(activities), len(restaurants),
             )
 
-            # ------ Observe：构造观察消息，追加到 messages ------
+            # ------ Observe：把完整候选列表序列化后追加到 messages，让 LLM 评判 ------
+            candidates_text = self._serialize_candidates(activities, restaurants)
             observation = (
-                f"搜索结果：活动候选 {len(activities)} 条，餐厅候选 {len(restaurants)} 条。\n"
+                f"本轮搜索结果如下（共活动 {len(activities)} 条、餐厅 {len(restaurants)} 条）：\n"
+                f"{candidates_text}\n\n"
+                f"请仔细阅读以上候选列表，判断它们是否数量充足、质量达标、风格符合「{style_hint}」方向。"
+                "满意则返回 {\"satisfied\": true}，"
+                "否则返回新的关键词 JSON 并说明调整原因。"
             )
-            sufficient = (
-                len(activities) >= _MIN_ACTIVITIES and len(restaurants) >= _MIN_RESTAURANTS
-            )
-            if sufficient:
-                observation += "候选数量充足。"
-            else:
-                shortage_parts: list[str] = []
-                if len(activities) < _MIN_ACTIVITIES:
-                    shortage_parts.append(f"活动不足（需至少 {_MIN_ACTIVITIES} 条）")
-                if len(restaurants) < _MIN_RESTAURANTS:
-                    shortage_parts.append(f"餐厅不足（需至少 {_MIN_RESTAURANTS} 条）")
-                observation += (
-                    f"{'、'.join(shortage_parts)}，请调整关键词重新搜索"
-                    f"（返回新的关键词 JSON）。"
-                )
-
             messages.append(LLMMessage(role="user", content=observation))
 
-            # 候选已充足，直接退出，无需再问 LLM（避免 LLM 否定充足结果）
-            if sufficient:
-                logger.debug(
-                    "[%s] strategy=%r: candidates sufficient at iteration %d, break",
-                    self.name, style_hint, iteration,
-                )
-                break
-
-            # 最后一次迭代，不再调用 LLM，直接退出
+            # 最后一次迭代，不再调用 LLM，直接退出（兜底）
             if iteration == max_iterations - 1:
                 break
 
