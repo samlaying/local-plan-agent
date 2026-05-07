@@ -10,6 +10,13 @@ class Settings(BaseSettings):
     use_mock_execution: bool = True
     amap_api_key: str = ""
 
+    # LLM
+    llm_base_url: str = "https://api.openai.com/v1"
+    llm_api_key: str = ""
+    llm_model: str = "gpt-4o-mini"
+    llm_temperature: float = 0.7
+    llm_max_tokens: int = 2048
+
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
 

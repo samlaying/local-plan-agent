@@ -1,12 +1,14 @@
 'use client';
 
-import React from 'react';
+import React, { useState } from 'react';
 import { useWorkbench } from '@/features/planner/contexts/WorkbenchContext';
 import { PlanCard } from './PlanCard';
 import { Button } from '@/components/ui';
 
 export const PlanCompareGrid: React.FC = () => {
-  const { plans, selectedPlan, setSelectedPlan, transitionTo } = useWorkbench();
+  const { plans, selectedPlan, setSelectedPlan, transitionTo, rejectPlan } = useWorkbench();
+  const [showRejectInput, setShowRejectInput] = useState(false);
+  const [rejectFeedback, setRejectFeedback] = useState('');
 
   // 模拟方案数据（实际应从 API 获取）
   const mockPlans = [
@@ -135,14 +137,59 @@ export const PlanCompareGrid: React.FC = () => {
         </div>
       </div>
 
-      {/* 重新输入按钮 */}
-      <div className="text-center mt-8">
-        <Button
-          variant="ghost"
-          onClick={() => transitionTo('input')}
-        >
-          重新输入需求
-        </Button>
+      {/* 不满意 / 重新规划 */}
+      <div className="mt-8">
+        {!showRejectInput ? (
+          <div className="flex justify-center gap-4">
+            <Button
+              variant="ghost"
+              onClick={() => transitionTo('input')}
+            >
+              重新输入需求
+            </Button>
+            <Button
+              variant="secondary"
+              onClick={() => setShowRejectInput(true)}
+            >
+              不喜欢，重新规划
+            </Button>
+          </div>
+        ) : (
+          <div className="card-paper p-6 max-w-2xl mx-auto border-2 border-line">
+            <h3 className="text-base font-bold text-ink mb-1">告诉我你想要什么方向（可选）</h3>
+            <p className="text-sm text-muted mb-4">不填也可以直接提交，Agent 会重新规划</p>
+            <textarea
+              value={rejectFeedback}
+              onChange={(e) => setRejectFeedback(e.target.value)}
+              placeholder="例如：换个户外活动的、近一点的、预算再低一些…"
+              rows={2}
+              className="w-full bg-card-bg border border-line rounded-xl px-4 py-3 text-sm text-ink placeholder:text-muted resize-none focus:outline-none focus:border-clay-orange mb-4"
+            />
+            <div className="flex gap-3 justify-end">
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  setShowRejectInput(false);
+                  setRejectFeedback('');
+                }}
+              >
+                取消
+              </Button>
+              <Button
+                variant="primary"
+                size="sm"
+                onClick={() => {
+                  rejectPlan(rejectFeedback.trim());
+                  setShowRejectInput(false);
+                  setRejectFeedback('');
+                }}
+              >
+                重新规划
+              </Button>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

@@ -3,13 +3,12 @@
 import React, { useState } from 'react';
 import { useWorkbench } from '@/features/planner/contexts/WorkbenchContext';
 import { Button } from '@/components/ui';
-import { CheckCircleIcon, ClockIcon, UsersIcon } from '../icons';
+import { CheckCircleIcon, ClockIcon } from '../icons';
 import { cn } from '@/lib/utils';
 
 export const ExecutionConfirmPanel: React.FC = () => {
-  const { selectedPlan, transitionTo } = useWorkbench();
+  const { selectedPlan, transitionTo, confirmExecution, isLoading } = useWorkbench();
   const [checkedItems, setCheckedItems] = useState<string[]>([]);
-  const [confirmed, setConfirmed] = useState(false);
 
   // 确认清单项目
   const checklistItems = [
@@ -45,21 +44,18 @@ export const ExecutionConfirmPanel: React.FC = () => {
     },
   ];
 
-  // 处理确认
-  const handleConfirm = async () => {
-    try {
-      // 前端本地模拟执行
-      await new Promise(resolve => setTimeout(resolve, 1500));
-      setConfirmed(true);
-
-      // 延迟后转换到完成状态
-      setTimeout(() => {
-        transitionTo('execution_done');
-      }, 1000);
-    } catch (error) {
-      console.error('Confirmation failed:', error);
-    }
+  const handleConfirm = () => {
+    if (!selectedPlan) return;
+    confirmExecution(selectedPlan.id);
   };
+
+  const toggleItem = (id: string, checked: boolean) => {
+    setCheckedItems((prev) =>
+      checked ? [...prev, id] : prev.filter((i) => i !== id)
+    );
+  };
+
+  const allChecklistChecked = checkedItems.length >= checklistItems.length && checkedItems.includes('safety');
 
   return (
     <div className="max-w-4xl mx-auto">
@@ -125,10 +121,12 @@ export const ExecutionConfirmPanel: React.FC = () => {
               const isChecked = checkedItems.includes(item.id);
 
               return (
-                <div
+                <button
                   key={item.id}
+                  type="button"
+                  onClick={() => toggleItem(item.id, !isChecked)}
                   className={cn(
-                    'flex items-center justify-between p-4 rounded-xl border transition-all duration-200',
+                    'w-full flex items-center justify-between p-4 rounded-xl border transition-all duration-200 text-left',
                     isChecked
                       ? 'bg-pine-green/10 border-pine-green'
                       : 'bg-card-bg border-line'
@@ -153,7 +151,7 @@ export const ExecutionConfirmPanel: React.FC = () => {
                   <div className="text-xs text-pine-green font-medium">
                     {isChecked ? '✅' : '待确认'}
                   </div>
-                </div>
+                </button>
               );
             })}
           </div>
@@ -176,13 +174,7 @@ export const ExecutionConfirmPanel: React.FC = () => {
                 <input
                   type="checkbox"
                   className="mt-1"
-                  onChange={(e) => {
-                    if (e.target.checked) {
-                      setCheckedItems([...checkedItems, 'safety']);
-                    } else {
-                      setCheckedItems(checkedItems.filter(id => id !== 'safety'));
-                    }
-                  }}
+                  onChange={(e) => toggleItem('safety', e.target.checked)}
                 />
                 <span className="text-sm text-ink">
                   我已阅读并同意出行安全须知
@@ -198,10 +190,10 @@ export const ExecutionConfirmPanel: React.FC = () => {
             variant="primary"
             size="lg"
             onClick={handleConfirm}
-            disabled={checkedItems.length < checklistItems.length || confirmed}
-            loading={confirmed}
+            disabled={!allChecklistChecked || isLoading || !selectedPlan}
+            loading={isLoading}
           >
-            {confirmed ? '确认中...' : '确认出发'}
+            {isLoading ? '确认中...' : '确认出发'}
           </Button>
         </div>
       </div>

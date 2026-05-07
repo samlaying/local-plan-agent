@@ -1,12 +1,15 @@
 'use client';
 
-import React, { createContext, useContext, useState, useCallback, ReactNode, useEffect } from 'react';
-import type { ItineraryPlan, TripMapSnapshot, UserIntent } from '@/types/planning';
+import React, { createContext, useContext, useState, useCallback, ReactNode, useEffect, useRef } from 'react';
+import type { ItineraryPlan, TripMapSnapshot, ExecutableAction } from '@/types/planning';
+import type { WsConnectionStatus, WsTraceData, WsAskData } from '@/types/websocket';
+import { wsClient } from '@/lib/ws-client';
 
 // 状态机类型定义
 export type WorkbenchState =
   | 'input'
   | 'generating'
+  | 'asking'
   | 'plan_select'
   | 'plan_detail'
   | 'sharing'
@@ -16,9 +19,10 @@ export type WorkbenchState =
 // 状态流转规则
 const STATE_TRANSITIONS: Record<WorkbenchState, WorkbenchState[]> = {
   input: ['generating'],
-  generating: ['plan_select', 'input'],
-  plan_select: ['plan_detail', 'input'],
-  plan_detail: ['sharing', 'plan_select'],
+  generating: ['plan_select', 'asking', 'input'],
+  asking: ['generating', 'input'],
+  plan_select: ['plan_detail', 'generating', 'input'],
+  plan_detail: ['sharing', 'plan_select', 'generating'],
   sharing: ['execution_confirm', 'plan_detail'],
   execution_confirm: ['execution_done', 'sharing'],
   execution_done: ['input'],
@@ -61,6 +65,21 @@ interface WorkbenchContextType {
   setIsLoading: (loading: boolean) => void;
   error: string | null;
   setError: (error: string | null) => void;
+
+  // ---- WebSocket 新增状态 ----
+  sessionId: string | null;
+  wsStatus: WsConnectionStatus;
+  traceEvents: WsTraceData[];
+  askQuestion: WsAskData | null;
+  executionActions: ExecutableAction[];
+
+  // ---- WebSocket 操作方法 ----
+  startPlanning: (query: string, location: { city: string; address: string; lat: number; lng: number }) => void;
+  sendUserReply: (text: string) => void;
+  confirmPlan: (planId: string) => void;
+  rejectPlan: (feedback?: string) => void;
+  confirmExecution: (planId: string) => void;
+  cancelPlanning: () => void;
 }
 
 // 创建 Context
@@ -96,30 +115,43 @@ export const WorkbenchProvider: React.FC<WorkbenchProviderProps> = ({ children }
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
 
-  // 状态转换方法
+  // ---- WebSocket 新增状态 ----
+  const [sessionId, setSessionId] = useState<string | null>(null);
+  const [wsStatus, setWsStatus] = useState<WsConnectionStatus>('disconnected');
+  const [traceEvents, setTraceEvents] = useState<WsTraceData[]>([]);
+  const [askQuestion, setAskQuestion] = useState<WsAskData | null>(null);
+  const [executionActions, setExecutionActions] = useState<ExecutableAction[]>([]);
+
+  // Ref to hold latest currentState for use inside stable WS callbacks
+  const currentStateRef = useRef<WorkbenchState>(currentState);
+  useEffect(() => {
+    currentStateRef.current = currentState;
+  }, [currentState]);
+
+  // ----------------------------------------------------------
+  // 状态转换方法（必须在 WebSocket effect 之前定义）
+  // ----------------------------------------------------------
+
+  const canTransitionTo = useCallback((newState: WorkbenchState): boolean => {
+    return STATE_TRANSITIONS[currentStateRef.current].includes(newState);
+  }, []);
+
   const transitionTo = useCallback((newState: WorkbenchState): boolean => {
-    // 检查是否可以转换到新状态
-    if (!canTransitionTo(newState)) {
-      console.warn(`Cannot transition from ${currentState} to ${newState}`);
+    if (!STATE_TRANSITIONS[currentStateRef.current].includes(newState)) {
+      console.warn(`Cannot transition from ${currentStateRef.current} to ${newState}`);
       return false;
     }
-
     setCurrentState(newState);
-
-    // 当进入 plan_detail 状态时，重置 tab 为 'overview'
     if (newState === 'plan_detail') {
       setActiveTab('overview');
     }
-
     return true;
-  }, [currentState, setActiveTab]);
+  }, []);
 
-  // 检查状态转换是否合法
-  const canTransitionTo = useCallback((newState: WorkbenchState): boolean => {
-    return STATE_TRANSITIONS[currentState].includes(newState);
-  }, [currentState]);
+  // ----------------------------------------------------------
+  // 重置
+  // ----------------------------------------------------------
 
-  // 重置状态
   const reset = useCallback(() => {
     setCurrentState('input');
     setUserIntent('');
@@ -129,7 +161,149 @@ export const WorkbenchProvider: React.FC<WorkbenchProviderProps> = ({ children }
     setShareToken(null);
     setIsLoading(false);
     setError(null);
+    setSessionId(null);
+    setTraceEvents([]);
+    setAskQuestion(null);
+    setExecutionActions([]);
   }, []);
+
+  // ----------------------------------------------------------
+  // WebSocket 初始化 & 回调注册
+  // ----------------------------------------------------------
+
+  useEffect(() => {
+    wsClient.on({
+      onConnectionStatusChange: (status) => {
+        setWsStatus(status);
+      },
+
+      onSessionReady: ({ session_id }) => {
+        setSessionId(session_id);
+      },
+
+      onTrace: (data) => {
+        setTraceEvents((prev) => [...prev, data]);
+      },
+
+      onAsk: (data) => {
+        setAskQuestion(data);
+        // Transition to asking state so the page renders the dedicated ask UI
+        if (STATE_TRANSITIONS[currentStateRef.current].includes('asking')) {
+          setCurrentState('asking');
+        }
+      },
+
+      onPlansReady: ({ plans: incoming }) => {
+        setPlans(incoming);
+        setAskQuestion(null);
+        // Transition to plan_select — ref-based check avoids stale closure
+        if (STATE_TRANSITIONS[currentStateRef.current].includes('plan_select')) {
+          setCurrentState('plan_select');
+        }
+        setIsLoading(false);
+      },
+
+      onExecutionPreview: ({ actions }) => {
+        setExecutionActions(actions);
+        if (STATE_TRANSITIONS[currentStateRef.current].includes('execution_confirm')) {
+          setCurrentState('execution_confirm');
+        }
+      },
+
+      onExecutionResult: ({ results }) => {
+        setExecutionActions(results);
+        if (STATE_TRANSITIONS[currentStateRef.current].includes('execution_done')) {
+          setCurrentState('execution_done');
+        }
+      },
+
+      onDone: () => {
+        setIsLoading(false);
+      },
+
+      onError: ({ message: msg, recoverable }) => {
+        setError(msg);
+        setIsLoading(false);
+        // Default recoverable to true if backend omits the field
+        if ((recoverable ?? true) === false) {
+          // Fall back to input so user can retry
+          setCurrentState('input');
+        }
+      },
+    });
+
+    wsClient.connect();
+
+    return () => {
+      // On unmount: disconnect and clear callbacks
+      wsClient.disconnect();
+      wsClient.off();
+    };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps — intentionally runs once
+
+  // ----------------------------------------------------------
+  // WebSocket 操作方法
+  // ----------------------------------------------------------
+
+  const startPlanning = useCallback(
+    (
+      query: string,
+      location: { city: string; address: string; lat: number; lng: number }
+    ) => {
+      setUserIntent(query);
+      setError(null);
+      setTraceEvents([]);
+      setAskQuestion(null);
+      setPlans([]);
+      setIsLoading(true);
+
+      if (STATE_TRANSITIONS[currentStateRef.current].includes('generating')) {
+        setCurrentState('generating');
+      }
+
+      wsClient.send({ type: 'start', payload: { query, location } });
+    },
+    []
+  );
+
+  const sendUserReply = useCallback((text: string) => {
+    setAskQuestion(null);
+    // Transition back to generating so the trace panel shows while backend continues
+    if (STATE_TRANSITIONS[currentStateRef.current].includes('generating')) {
+      setCurrentState('generating');
+    }
+    wsClient.send({ type: 'user_reply', payload: { text } });
+  }, []);
+
+  const confirmPlan = useCallback((planId: string) => {
+    wsClient.send({ type: 'plan_confirmed', payload: { plan_id: planId } });
+  }, []);
+
+  const rejectPlan = useCallback((feedback?: string) => {
+    setPlans([]);
+    setSelectedPlan(null);
+    setIsLoading(true);
+    // Transition to generating so the trace panel shows while backend re-plans
+    if (STATE_TRANSITIONS[currentStateRef.current].includes('generating')) {
+      setCurrentState('generating');
+    }
+    wsClient.send({ type: 'plan_rejected', payload: { feedback: feedback ?? '' } });
+  }, []);
+
+  const confirmExecution = useCallback((planId: string) => {
+    setIsLoading(true);
+    wsClient.send({ type: 'execution_confirmed', payload: { plan_id: planId } });
+  }, []);
+
+  const cancelPlanning = useCallback(() => {
+    wsClient.send({ type: 'cancel' });
+    setIsLoading(false);
+    setCurrentState('input');
+  }, []);
+
+  // ----------------------------------------------------------
+  // Context value
+  // ----------------------------------------------------------
 
   const value: WorkbenchContextType = {
     currentState,
@@ -152,6 +326,18 @@ export const WorkbenchProvider: React.FC<WorkbenchProviderProps> = ({ children }
     setIsLoading,
     error,
     setError,
+    // WebSocket
+    sessionId,
+    wsStatus,
+    traceEvents,
+    askQuestion,
+    executionActions,
+    startPlanning,
+    sendUserReply,
+    confirmPlan,
+    rejectPlan,
+    confirmExecution,
+    cancelPlanning,
   };
 
   return (
@@ -181,6 +367,11 @@ export const getStateInfo = (state: WorkbenchState) => {
     generating: {
       title: '生成路线',
       description: 'Agent 正在理解你的偏好',
+      stepNumber: 2,
+    },
+    asking: {
+      title: '补充信息',
+      description: 'Agent 需要了解更多',
       stepNumber: 2,
     },
     plan_select: {
