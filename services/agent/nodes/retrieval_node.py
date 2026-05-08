@@ -322,14 +322,17 @@ class RetrievalNode(BaseNode):
                     self.name, style_hint, exc,
                 )
 
+        # 是否需要搜索餐厅（intent.include_meal=False 时跳过）
+        search_restaurants = getattr(intent, "include_meal", True)
+
         for iteration in range(max_iterations):
             # ------ Act：使用当前关键词搜索 ------
             try:
                 kw_act = activity_keywords
                 ty_act = activity_types
-                kw_rest = restaurant_keywords
-                ty_rest = restaurant_types
-                activities, restaurants = await loop.run_in_executor(
+                kw_rest = restaurant_keywords if search_restaurants else ""
+                ty_rest = restaurant_types if search_restaurants else ""
+                activities, restaurants_raw = await loop.run_in_executor(
                     None,
                     lambda: self._searcher.search_with_strategy(
                         intent,
@@ -339,6 +342,8 @@ class RetrievalNode(BaseNode):
                         ty_rest,
                     ),
                 )
+                # include_meal=False 时强制清空餐厅结果（即使搜索器返回了也丢弃）
+                restaurants = restaurants_raw if search_restaurants else []
             except Exception as exc:  # noqa: BLE001
                 logger.warning(
                     "[%s] strategy=%r iteration=%d: search_with_strategy failed: %s，降级为空列表",

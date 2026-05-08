@@ -29,6 +29,7 @@ from app.schemas.planning import ItineraryStepSchema, PlanSchema, POISchema, Use
 from app.services.activity_workflow import (
     ConstraintCheckResult,
     _build_plan,
+    _build_plan_from_steps,
     generate_actions,
     generate_plans,
 )
@@ -45,18 +46,19 @@ _SYSTEM_PROMPT = """\
 你是一位专业的本地生活行程规划专家。你的任务是根据候选地点列表，为用户生成 2-3 个不同风格的行程方案。
 
 要求：
-1. 每个方案必须选择一个主要活动地点和一个餐厅
-2. 方案之间风格应有所区别（如：强度不同、距离远近不同、价格档次不同）
-3. 选择时优先考虑：评分高、等位时间短、适合该场景的地点
-4. 餐厅选择要与活动地点的位置和风格协调
-5. 输出必须是合法 JSON，不含其他内容
-6. 时间决策：你需要为每个地点决定合理的停留时长。\
+1. 方案之间风格应有所区别（如：强度不同、距离远近不同、价格档次不同）
+2. 选择时优先考虑：评分高、等位时间短、适合该场景的地点
+3. 输出必须是合法 JSON，不含其他内容
+4. 时间决策：你需要为每个地点决定合理的停留时长。\
 依据场景特征（亲子/朋友）、参与人群（有孩子则时间更短）和总时间窗口综合判断。\
 时长约束：活动类建议 45–120 分钟，餐厅类建议 40–80 分钟。\
 确保所有地点时长之和加上出行时间（约 10–20 分钟）不超过时间窗口总长。\
-如果活动和餐厅时间之和明显短于总时间窗口（剩余 ≥ 30 分钟），优先考虑安排 extra 活动，而不是让时间空着。
-7. 步骤描述：为每个地点写一句具体的中文描述，说明在这里做什么、有什么亮点，写给用户看的，不超过 30 字。
-8. 全中文输出：所有文本字段必须使用中文，POI 的原始英文名称可保留。
+如果时间窗口有剩余（≥ 30 分钟），优先增加一个活动地点，而不是让时间空着。
+5. 步骤描述：为每个地点写一句具体的中文描述，说明在这里做什么、有什么亮点，写给用户看的，不超过 30 字。
+6. 全中文输出：所有文本字段必须使用中文，POI 的原始英文名称可保留。
+7. 用餐规则：
+   - 如果用户消息中写明"需要安排用餐"，steps 中必须有且仅有一个 type=meal 的步骤，放在最后。
+   - 如果用户消息中写明"不需要安排用餐，候选列表中无餐厅"，steps 全部为 activity，不出现 meal。
 
 输出格式（JSON，plans 数组包含 2-3 个方案）：
 {
@@ -64,25 +66,19 @@ _SYSTEM_PROMPT = """\
     {
       "plan_title": "方案标题（简短描述风格）",
       "plan_summary": "一句话描述方案亮点",
-      "activity": {
-        "poi_id": "主活动 POI 的 id",
-        "duration_minutes": 75,
-        "description": "具体说明在这里做什么的一句话描述"
-      },
-      "meal": {
-        "poi_id": "餐厅 POI 的 id",
-        "duration_minutes": 50,
-        "description": "具体说明用餐亮点的一句话描述"
-      },
-      "extra": null
+      "steps": [
+        { "poi_id": "活动 POI 的 id", "type": "activity", "duration_minutes": 90, "description": "具体说明在这里做什么的一句话描述" },
+        { "poi_id": "活动 POI 的 id", "type": "activity", "duration_minutes": 60, "description": "具体说明在这里做什么的一句话描述" },
+        { "poi_id": "餐厅 POI 的 id", "type": "meal",     "duration_minutes": 60, "description": "具体说明用餐亮点的一句话描述" }
+      ]
     }
   ]
 }
 
 注意：
-- activity.poi_id、meal.poi_id 必须从候选列表中选择，使用完整 id 字段值
-- extra 若存在，结构与 activity/meal 相同（含 poi_id、duration_minutes、description），其 poi_id 必须从活动候选列表中选择
-- extra 不需要时设为 null
+- steps 中每项的 poi_id 必须从候选列表中选择，使用完整 id 字段值
+- type 只能是 "activity" 或 "meal"
+- 活动数量 1–3 个，如需用餐则 meal 放在最后（只能有 1 个 meal）
 - 最多生成 3 个方案，至少生成 2 个方案
 """
 
@@ -106,17 +102,18 @@ _SINGLE_PLAN_SYSTEM_PROMPT = """\
 你是一位专业的本地生活行程规划专家。你的任务是根据候选地点列表，为用户生成 1 个最优行程方案。
 
 要求：
-1. 方案必须选择一个主要活动地点和一个餐厅
-2. 选择时优先考虑：评分高、等位时间短、适合该场景的地点
-3. 餐厅选择要与活动地点的位置和风格协调
-4. 输出必须是合法 JSON，不含其他内容
-5. 时间决策：你需要为每个地点决定合理的停留时长。\
+1. 选择时优先考虑：评分高、等位时间短、适合该场景的地点
+2. 输出必须是合法 JSON，不含其他内容
+3. 时间决策：你需要为每个地点决定合理的停留时长。\
 依据场景特征（亲子/朋友）、参与人群（有孩子则时间更短）和总时间窗口综合判断。\
 时长约束：活动类建议 45–120 分钟，餐厅类建议 40–80 分钟。\
 确保所有地点时长之和加上出行时间（约 10–20 分钟）不超过时间窗口总长。\
-如果活动和餐厅时间之和明显短于总时间窗口（剩余 ≥ 30 分钟），优先考虑安排 extra 活动，而不是让时间空着。
-6. 步骤描述：为每个地点写一句具体的中文描述，说明在这里做什么、有什么亮点，写给用户看的，不超过 30 字。
-7. 全中文输出：所有文本字段必须使用中文，POI 的原始英文名称可保留。
+如果时间窗口有剩余（≥ 30 分钟），优先增加一个活动地点，而不是让时间空着。
+4. 步骤描述：为每个地点写一句具体的中文描述，说明在这里做什么、有什么亮点，写给用户看的，不超过 30 字。
+5. 全中文输出：所有文本字段必须使用中文，POI 的原始英文名称可保留。
+6. 用餐规则：
+   - 如果用户消息中写明"需要安排用餐"，steps 中必须有且仅有一个 type=meal 的步骤，放在最后。
+   - 如果用户消息中写明"不需要安排用餐，候选列表中无餐厅"，steps 全部为 activity，不出现 meal。
 
 输出格式（JSON，plans 数组只包含 1 个元素）：
 {
@@ -124,25 +121,18 @@ _SINGLE_PLAN_SYSTEM_PROMPT = """\
     {
       "plan_title": "方案标题（简短描述风格）",
       "plan_summary": "一句话描述方案亮点",
-      "activity": {
-        "poi_id": "主活动 POI 的 id",
-        "duration_minutes": 75,
-        "description": "具体说明在这里做什么的一句话描述"
-      },
-      "meal": {
-        "poi_id": "餐厅 POI 的 id",
-        "duration_minutes": 50,
-        "description": "具体说明用餐亮点的一句话描述"
-      },
-      "extra": null
+      "steps": [
+        { "poi_id": "活动 POI 的 id", "type": "activity", "duration_minutes": 90, "description": "具体说明在这里做什么的一句话描述" },
+        { "poi_id": "餐厅 POI 的 id", "type": "meal",     "duration_minutes": 60, "description": "具体说明用餐亮点的一句话描述" }
+      ]
     }
   ]
 }
 
 注意：
-- activity.poi_id、meal.poi_id 必须从候选列表中选择，使用完整 id 字段值
-- extra 若存在，结构与 activity/meal 相同（含 poi_id、duration_minutes、description），其 poi_id 必须从活动候选列表中选择
-- extra 不需要时设为 null
+- steps 中每项的 poi_id 必须从候选列表中选择，使用完整 id 字段值
+- type 只能是 "activity" 或 "meal"
+- 活动数量 1–3 个，如需用餐则 meal 放在最后（只能有 1 个 meal）
 - plans 数组必须恰好包含 1 个方案
 """
 
@@ -212,6 +202,12 @@ def _build_user_message(
     if intent.diet_requirements:
         parts.append(f"饮食要求：{', '.join(intent.diet_requirements)}\n")
 
+    include_meal = getattr(intent, "include_meal", True)
+    if include_meal:
+        parts.append("用餐安排：需要安排用餐\n")
+    else:
+        parts.append("用餐安排：不需要安排用餐，候选列表中无餐厅\n")
+
     parts.append("\n")
     parts.append(_serialize_poi_list(retrieval.activities, "活动"))
     parts.append("\n")
@@ -249,6 +245,12 @@ def _build_user_message_single(
 
     if intent.diet_requirements:
         parts.append(f"饮食要求：{', '.join(intent.diet_requirements)}\n")
+
+    include_meal = getattr(intent, "include_meal", True)
+    if include_meal:
+        parts.append("用餐安排：需要安排用餐\n")
+    else:
+        parts.append("用餐安排：不需要安排用餐，候选列表中无餐厅\n")
 
     if style:
         parts.append(f"当前风格：{style}\n")
@@ -359,9 +361,15 @@ def _plans_from_llm_response(
     poi_map: dict[str, POISchema],
 ) -> list[PlanSchema]:
     """
-    根据 LLM 返回的方案选择结果，组装完整的 PlanSchema 列表。
+    根据 LLM 返回的 steps 列表方案结果，组装完整的 PlanSchema 列表。
 
-    如果某个方案引用了不存在的 POI id，则跳过该方案。
+    LLM 输出格式：
+        {"plans": [{"plan_title": "...", "plan_summary": "...", "steps": [
+            {"poi_id": "...", "type": "activity"|"meal", "duration_minutes": N, "description": "..."},
+            ...
+        ]}, ...]}
+
+    如果某个方案的 steps 引用了不存在的 POI id，则跳过该方案。
     """
     raw_plans: list[dict[str, Any]] = llm_data.get("plans", [])
     if not isinstance(raw_plans, list):
@@ -370,84 +378,66 @@ def _plans_from_llm_response(
 
     plans: list[PlanSchema] = []
     for idx, raw in enumerate(raw_plans[:3], start=1):
-        # 解析新 schema：activity / meal / extra 嵌套对象
-        activity_obj = raw.get("activity") or {}
-        meal_obj = raw.get("meal") or {}
-        extra_obj = raw.get("extra")  # 可能为 None
-
-        activity_id = activity_obj.get("poi_id", "") if isinstance(activity_obj, dict) else ""
-        restaurant_id = meal_obj.get("poi_id", "") if isinstance(meal_obj, dict) else ""
-
-        activity = _find_poi(activity_id, poi_map)
-        restaurant = _find_poi(restaurant_id, poi_map)
-
-        if activity is None or restaurant is None:
-            logger.warning(
-                "PlanningNode: 方案 %d 引用了无效 POI id（activity=%r, restaurant=%r），跳过",
-                idx, activity_id, restaurant_id,
-            )
+        raw_steps = raw.get("steps")
+        if not isinstance(raw_steps, list) or not raw_steps:
+            logger.warning("PlanningNode: 方案 %d 缺少 steps 列表，跳过", idx)
             continue
 
-        # 从 LLM 响应提取时长和描述
-        activity_duration: int | None = None
-        activity_description: str | None = None
-        if isinstance(activity_obj, dict):
-            raw_dur = activity_obj.get("duration_minutes")
-            if isinstance(raw_dur, (int, float)) and raw_dur > 0:
-                activity_duration = int(raw_dur)
-            desc = activity_obj.get("description", "")
-            if isinstance(desc, str) and desc.strip():
-                activity_description = desc.strip()
+        # 解析 steps，查找对应 POI
+        steps_spec: list[dict] = []
+        valid = True
+        for step_item in raw_steps:
+            if not isinstance(step_item, dict):
+                logger.warning("PlanningNode: 方案 %d 的 step 不是 dict，跳过方案", idx)
+                valid = False
+                break
 
-        meal_duration: int | None = None
-        meal_description: str | None = None
-        if isinstance(meal_obj, dict):
-            raw_dur = meal_obj.get("duration_minutes")
-            if isinstance(raw_dur, (int, float)) and raw_dur > 0:
-                meal_duration = int(raw_dur)
-            desc = meal_obj.get("description", "")
-            if isinstance(desc, str) and desc.strip():
-                meal_description = desc.strip()
-
-        extra: POISchema | None = None
-        extra_duration: int | None = None
-        extra_description: str | None = None
-        if isinstance(extra_obj, dict) and extra_obj:
-            extra_id = extra_obj.get("poi_id", "")
-            extra = _find_poi(extra_id, poi_map)
-            if extra is None:
+            poi_id = step_item.get("poi_id", "")
+            step_type = step_item.get("type", "activity")
+            if step_type not in ("activity", "meal"):
                 logger.warning(
-                    "PlanningNode: 方案 %d 引用了无效 extra poi_id=%r，忽略附加活动",
-                    idx, extra_id,
+                    "PlanningNode: 方案 %d step type=%r 非法，重置为 activity", idx, step_type,
                 )
-            else:
-                raw_dur = extra_obj.get("duration_minutes")
-                if isinstance(raw_dur, (int, float)) and raw_dur > 0:
-                    extra_duration = int(raw_dur)
-                desc = extra_obj.get("description", "")
-                if isinstance(desc, str) and desc.strip():
-                    extra_description = desc.strip()
+                step_type = "activity"
 
-        plan = _build_plan(
-            intent, activity, restaurant, extra, idx,
-            activity_duration=activity_duration,
-            meal_duration=meal_duration,
-            extra_duration=extra_duration,
-            activity_description=activity_description,
-            meal_description=meal_description,
-            extra_description=extra_description,
-        )
+            poi = _find_poi(poi_id, poi_map)
+            if poi is None:
+                logger.warning(
+                    "PlanningNode: 方案 %d 引用了无效 poi_id=%r，跳过方案", idx, poi_id,
+                )
+                valid = False
+                break
 
-        # 将 LLM 的描述性字段覆盖到方案上（如果 LLM 提供了的话）
-        plan_title = raw.get("plan_title", "").strip()
-        plan_summary = raw.get("plan_summary", "").strip()
-        if plan_title:
-            plan = plan.model_copy(update={"title": plan_title})
-        if plan_summary:
-            plan = plan.model_copy(update={"summary": plan_summary})
+            raw_dur = step_item.get("duration_minutes")
+            duration_minutes: int = (
+                int(raw_dur) if isinstance(raw_dur, (int, float)) and raw_dur > 0
+                else poi.recommended_duration_minutes
+            )
+            desc = step_item.get("description", "")
+            description: str | None = desc.strip() if isinstance(desc, str) and desc.strip() else None
 
-        # 将 _build_plan 生成的英文描述本地化为中文（transit 步骤仍需本地化）
-        plan = _localize_plan(plan, intent, extra, poi_map)
+            steps_spec.append({
+                "poi": poi,
+                "type": step_type,
+                "duration_minutes": duration_minutes,
+                "description": description,
+            })
+
+        if not valid or not steps_spec:
+            continue
+
+        plan = _build_plan_from_steps(intent, steps_spec, idx)
+
+        # 将 LLM 提供的标题/摘要覆盖到方案上
+        plan_title = raw.get("plan_title", "")
+        plan_summary = raw.get("plan_summary", "")
+        if isinstance(plan_title, str) and plan_title.strip():
+            plan = plan.model_copy(update={"title": plan_title.strip()})
+        if isinstance(plan_summary, str) and plan_summary.strip():
+            plan = plan.model_copy(update={"summary": plan_summary.strip()})
+
+        # 本地化 transit 步骤的英文描述
+        plan = _localize_plan(plan, intent, None, poi_map)
 
         plans.append(plan)
 
