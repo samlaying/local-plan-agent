@@ -345,6 +345,12 @@ def _build_plan(
     restaurant: POISchema,
     extra: POISchema | None,
     index: int,
+    activity_duration: int | None = None,
+    meal_duration: int | None = None,
+    extra_duration: int | None = None,
+    activity_description: str | None = None,
+    meal_description: str | None = None,
+    extra_description: str | None = None,
 ) -> PlanSchema:
     start = _parse_datetime(intent.time_window.date, intent.time_window.start or "14:00")
     steps: list[ItineraryStepSchema] = []
@@ -353,22 +359,22 @@ def _build_plan(
     steps.append(_transit_step("transit_start", "Depart from origin", current, activity.travel_minutes))
     current += timedelta(minutes=activity.travel_minutes)
 
-    activity_minutes = min(activity.recommended_duration_minutes, 150)
-    steps.append(_poi_step("activity_main", activity, current, activity_minutes))
+    activity_minutes = activity_duration if activity_duration is not None else min(activity.recommended_duration_minutes, 150)
+    steps.append(_poi_step("activity_main", activity, current, activity_minutes, description=activity_description))
     current += timedelta(minutes=activity_minutes)
 
     if extra is not None:
         steps.append(_transit_step("transit_extra", f"Move to {extra.name}", current, max(8, extra.travel_minutes // 2)))
         current += timedelta(minutes=max(8, extra.travel_minutes // 2))
-        extra_minutes = min(extra.recommended_duration_minutes, 75)
-        steps.append(_poi_step("extra_activity", extra, current, extra_minutes, step_type="extra"))
+        extra_minutes = extra_duration if extra_duration is not None else min(extra.recommended_duration_minutes, 75)
+        steps.append(_poi_step("extra_activity", extra, current, extra_minutes, step_type="extra", description=extra_description))
         current += timedelta(minutes=extra_minutes)
 
     steps.append(_transit_step("transit_meal", f"Move to {restaurant.name}", current, max(10, restaurant.travel_minutes // 2)))
     current += timedelta(minutes=max(10, restaurant.travel_minutes // 2))
 
-    meal_minutes = min(restaurant.recommended_duration_minutes, 90)
-    steps.append(_poi_step("meal", restaurant, current, meal_minutes, step_type="meal"))
+    meal_minutes = meal_duration if meal_duration is not None else min(restaurant.recommended_duration_minutes, 90)
+    steps.append(_poi_step("meal", restaurant, current, meal_minutes, step_type="meal", description=meal_description))
     current += timedelta(minutes=meal_minutes)
 
     total_minutes = int((current - start).total_seconds() // 60)
@@ -427,8 +433,10 @@ def _poi_step(
     start: datetime,
     duration_minutes: int,
     step_type: str = "activity",
+    description: str | None = None,
 ) -> ItineraryStepSchema:
     end = start + timedelta(minutes=duration_minutes)
+    step_description = description if description else f"{poi.subcategory}; estimated queue {poi.queue.wait_minutes} minutes."
     return ItineraryStepSchema(
         id=step_id,
         type=step_type,
@@ -437,7 +445,7 @@ def _poi_step(
         start_time=start.strftime("%H:%M"),
         end_time=end.strftime("%H:%M"),
         duration_minutes=duration_minutes,
-        description=f"{poi.subcategory}; estimated queue {poi.queue.wait_minutes} minutes.",
+        description=step_description,
         fit_reasons=poi.reasons,
         risks=poi.cautions,
     )

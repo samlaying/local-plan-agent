@@ -50,29 +50,39 @@ _SYSTEM_PROMPT = """\
 3. 选择时优先考虑：评分高、等位时间短、适合该场景的地点
 4. 餐厅选择要与活动地点的位置和风格协调
 5. 输出必须是合法 JSON，不含其他内容
-6. 时间窗口覆盖：生成的方案必须覆盖用户给出的完整时间窗口（从 start_time 到 end_time）。\
-选择地点时，请确保主活动、用餐及可选附加活动的总时长（含出行时间）能填满整个时间窗口。\
-如果主活动和用餐结束后仍有较多剩余时间（≥15 分钟），优先通过 extra_activity_id 安排附加活动。\
-方案不允许在时间窗口中途结束。
-7. 全中文输出：plan_title、plan_summary 等所有文本字段必须使用中文。\
-POI 的原始英文名称可保留，其余描述性文字一律用中文。
+6. 时间决策：你需要为每个地点决定合理的停留时长。\
+依据场景特征（亲子/朋友）、参与人群（有孩子则时间更短）和总时间窗口综合判断。\
+时长约束：活动类建议 45–120 分钟，餐厅类建议 40–80 分钟。\
+确保所有地点时长之和加上出行时间（约 10–20 分钟）不超过时间窗口总长。\
+如果活动和餐厅时间之和明显短于总时间窗口（剩余 ≥ 30 分钟），优先考虑安排 extra 活动，而不是让时间空着。
+7. 步骤描述：为每个地点写一句具体的中文描述，说明在这里做什么、有什么亮点，写给用户看的，不超过 30 字。
+8. 全中文输出：所有文本字段必须使用中文，POI 的原始英文名称可保留。
 
-输出格式（JSON 数组，每个元素是一个方案）：
+输出格式（JSON，plans 数组包含 2-3 个方案）：
 {
   "plans": [
     {
       "plan_title": "方案标题（简短描述风格）",
       "plan_summary": "一句话描述方案亮点",
-      "selected_activity_id": "主活动 POI 的 id",
-      "selected_restaurant_id": "餐厅 POI 的 id",
-      "extra_activity_id": "可选的附加活动 POI id，没有则为 null"
+      "activity": {
+        "poi_id": "主活动 POI 的 id",
+        "duration_minutes": 75,
+        "description": "具体说明在这里做什么的一句话描述"
+      },
+      "meal": {
+        "poi_id": "餐厅 POI 的 id",
+        "duration_minutes": 50,
+        "description": "具体说明用餐亮点的一句话描述"
+      },
+      "extra": null
     }
   ]
 }
 
 注意：
-- selected_activity_id、selected_restaurant_id 必须从候选列表中选择，使用完整 id 字段值
-- extra_activity_id 可为 null，填入时也必须从活动候选列表中选择
+- activity.poi_id、meal.poi_id 必须从候选列表中选择，使用完整 id 字段值
+- extra 若存在，结构与 activity/meal 相同（含 poi_id、duration_minutes、description），其 poi_id 必须从活动候选列表中选择
+- extra 不需要时设为 null
 - 最多生成 3 个方案，至少生成 2 个方案
 """
 
@@ -100,12 +110,13 @@ _SINGLE_PLAN_SYSTEM_PROMPT = """\
 2. 选择时优先考虑：评分高、等位时间短、适合该场景的地点
 3. 餐厅选择要与活动地点的位置和风格协调
 4. 输出必须是合法 JSON，不含其他内容
-5. 时间窗口覆盖：生成的方案必须覆盖用户给出的完整时间窗口（从 start_time 到 end_time）。\
-选择地点时，请确保主活动、用餐及可选附加活动的总时长（含出行时间）能填满整个时间窗口。\
-如果主活动和用餐结束后仍有较多剩余时间（≥15 分钟），优先通过 extra_activity_id 安排附加活动。\
-方案不允许在时间窗口中途结束。
-6. 全中文输出：plan_title、plan_summary 等所有文本字段必须使用中文。\
-POI 的原始英文名称可保留，其余描述性文字一律用中文。
+5. 时间决策：你需要为每个地点决定合理的停留时长。\
+依据场景特征（亲子/朋友）、参与人群（有孩子则时间更短）和总时间窗口综合判断。\
+时长约束：活动类建议 45–120 分钟，餐厅类建议 40–80 分钟。\
+确保所有地点时长之和加上出行时间（约 10–20 分钟）不超过时间窗口总长。\
+如果活动和餐厅时间之和明显短于总时间窗口（剩余 ≥ 30 分钟），优先考虑安排 extra 活动，而不是让时间空着。
+6. 步骤描述：为每个地点写一句具体的中文描述，说明在这里做什么、有什么亮点，写给用户看的，不超过 30 字。
+7. 全中文输出：所有文本字段必须使用中文，POI 的原始英文名称可保留。
 
 输出格式（JSON，plans 数组只包含 1 个元素）：
 {
@@ -113,16 +124,25 @@ POI 的原始英文名称可保留，其余描述性文字一律用中文。
     {
       "plan_title": "方案标题（简短描述风格）",
       "plan_summary": "一句话描述方案亮点",
-      "selected_activity_id": "主活动 POI 的 id",
-      "selected_restaurant_id": "餐厅 POI 的 id",
-      "extra_activity_id": "可选的附加活动 POI id，没有则为 null"
+      "activity": {
+        "poi_id": "主活动 POI 的 id",
+        "duration_minutes": 75,
+        "description": "具体说明在这里做什么的一句话描述"
+      },
+      "meal": {
+        "poi_id": "餐厅 POI 的 id",
+        "duration_minutes": 50,
+        "description": "具体说明用餐亮点的一句话描述"
+      },
+      "extra": null
     }
   ]
 }
 
 注意：
-- selected_activity_id、selected_restaurant_id 必须从候选列表中选择，使用完整 id 字段值
-- extra_activity_id 可为 null，填入时也必须从活动候选列表中选择
+- activity.poi_id、meal.poi_id 必须从候选列表中选择，使用完整 id 字段值
+- extra 若存在，结构与 activity/meal 相同（含 poi_id、duration_minutes、description），其 poi_id 必须从活动候选列表中选择
+- extra 不需要时设为 null
 - plans 数组必须恰好包含 1 个方案
 """
 
@@ -146,7 +166,6 @@ def _serialize_poi_list(pois: list[POISchema], label: str) -> str:
             f"  评分: {poi.rating}/5\n"
             f"  距离: {poi.distance_km}km（预计行程 {poi.travel_minutes} 分钟）\n"
             f"  营业时间: {poi.business_hours.open}–{poi.business_hours.close}\n"
-            f"  推荐游玩时长: {poi.recommended_duration_minutes} 分钟\n"
             f"  人均费用: {poi.price_per_person} 元\n"
             f"  当前等位: {poi.queue.wait_minutes} 分钟\n"
             f"  可预约: {'是' if poi.reservable else '否'}\n"
@@ -213,6 +232,8 @@ def _build_user_message_single(
     intent: UserIntentSchema,
     retrieval: RetrievalResult,
     style: str,
+    rejection_reason: str | None = None,
+    preference_adjustments: list[str] | None = None,
 ) -> str:
     """构建单策略 LLM 调用的用户消息，包含风格说明，要求只生成 1 个方案。"""
     parts: list[str] = []
@@ -236,6 +257,13 @@ def _build_user_message_single(
     parts.append(_serialize_poi_list(retrieval.activities, "活动"))
     parts.append("\n")
     parts.append(_serialize_poi_list(retrieval.restaurants, "餐厅"))
+
+    if rejection_reason:
+        parts.append(_REJECTION_HINT_TEMPLATE.format(reason=rejection_reason))
+
+    if preference_adjustments:
+        adjustments_text = "\n".join(f"- {item}" for item in preference_adjustments)
+        parts.append(_PREFERENCE_ADJUSTMENTS_TEMPLATE.format(adjustments=adjustments_text))
 
     parts.append("\n请从以上候选列表中选出 1 个最优方案，以 JSON 格式返回。")
     return "".join(parts)
@@ -309,84 +337,6 @@ def _localize_plan(
     })
 
 
-# ---------------------------------------------------------------------------
-# 时间窗口填充：确保方案步骤覆盖完整时间窗口
-# ---------------------------------------------------------------------------
-
-_FILLER_STEP_OPTIONS = [
-    ("周边漫步探索", "利用剩余时间，在周边街区散步探索，感受当地氛围。"),
-    ("咖啡或甜品时间", "就近找一家咖啡馆或甜品店，放松休息，享受惬意时光。"),
-    ("自由活动时间", "剩余时间自由安排，可拍照留念、逛逛周边小店或休息。"),
-]
-
-
-def _parse_hm(time_str: str) -> int:
-    """将 'HH:MM' 格式的时间字符串转换为从午夜起的分钟数。"""
-    h, m = time_str.split(":")
-    return int(h) * 60 + int(m)
-
-
-def _minutes_to_hm(minutes: int) -> str:
-    """将从午夜起的分钟数转换为 'HH:MM' 格式字符串。"""
-    return f"{minutes // 60:02d}:{minutes % 60:02d}"
-
-
-def _fill_time_window(plan: PlanSchema, intent: UserIntentSchema) -> PlanSchema:
-    """若方案结束时间早于 intent.time_window.end 超过 15 分钟，追加填充步骤。
-
-    填充步骤类型为 'activity'，使用预设的中文描述，不涉及具体 POI。
-    每次最多追加一个填充步骤；若填充后仍有剩余（>= 15 分钟），再追加下一个，
-    最多追加 len(_FILLER_STEP_OPTIONS) 个。
-    """
-    if intent.time_window.end is None:
-        return plan
-
-    window_end_minutes = _parse_hm(intent.time_window.end)
-
-    # 找到当前最后一个步骤的结束时间
-    if not plan.steps:
-        return plan
-
-    steps = list(plan.steps)
-    filler_index = 0
-
-    for _ in range(len(_FILLER_STEP_OPTIONS)):
-        last_step = steps[-1]
-        last_end_minutes = _parse_hm(last_step.end_time)
-        remaining = window_end_minutes - last_end_minutes
-
-        if remaining < 15:
-            break
-
-        if filler_index >= len(_FILLER_STEP_OPTIONS):
-            break
-
-        title, description = _FILLER_STEP_OPTIONS[filler_index]
-        filler_duration = min(remaining, 60)  # 单次填充最多 60 分钟
-        filler_end = last_end_minutes + filler_duration
-
-        filler_step = ItineraryStepSchema(
-            id=f"filler_{filler_index + 1}",
-            type="activity",
-            title=title,
-            poi_id=None,
-            start_time=_minutes_to_hm(last_end_minutes),
-            end_time=_minutes_to_hm(filler_end),
-            duration_minutes=filler_duration,
-            description=description,
-        )
-        steps.append(filler_step)
-        filler_index += 1
-
-    if len(steps) == len(plan.steps):
-        return plan  # 无需填充
-
-    new_total = _parse_hm(steps[-1].end_time) - _parse_hm(steps[0].start_time)
-    return plan.model_copy(update={
-        "steps": steps,
-        "total_duration_minutes": max(plan.total_duration_minutes, new_total),
-    })
-
 
 # ---------------------------------------------------------------------------
 # LLM 响应解析与方案构建
@@ -420,9 +370,13 @@ def _plans_from_llm_response(
 
     plans: list[PlanSchema] = []
     for idx, raw in enumerate(raw_plans[:3], start=1):
-        activity_id = raw.get("selected_activity_id", "")
-        restaurant_id = raw.get("selected_restaurant_id", "")
-        extra_id = raw.get("extra_activity_id")  # 可能为 None
+        # 解析新 schema：activity / meal / extra 嵌套对象
+        activity_obj = raw.get("activity") or {}
+        meal_obj = raw.get("meal") or {}
+        extra_obj = raw.get("extra")  # 可能为 None
+
+        activity_id = activity_obj.get("poi_id", "") if isinstance(activity_obj, dict) else ""
+        restaurant_id = meal_obj.get("poi_id", "") if isinstance(meal_obj, dict) else ""
 
         activity = _find_poi(activity_id, poi_map)
         restaurant = _find_poi(restaurant_id, poi_map)
@@ -434,16 +388,55 @@ def _plans_from_llm_response(
             )
             continue
 
+        # 从 LLM 响应提取时长和描述
+        activity_duration: int | None = None
+        activity_description: str | None = None
+        if isinstance(activity_obj, dict):
+            raw_dur = activity_obj.get("duration_minutes")
+            if isinstance(raw_dur, (int, float)) and raw_dur > 0:
+                activity_duration = int(raw_dur)
+            desc = activity_obj.get("description", "")
+            if isinstance(desc, str) and desc.strip():
+                activity_description = desc.strip()
+
+        meal_duration: int | None = None
+        meal_description: str | None = None
+        if isinstance(meal_obj, dict):
+            raw_dur = meal_obj.get("duration_minutes")
+            if isinstance(raw_dur, (int, float)) and raw_dur > 0:
+                meal_duration = int(raw_dur)
+            desc = meal_obj.get("description", "")
+            if isinstance(desc, str) and desc.strip():
+                meal_description = desc.strip()
+
         extra: POISchema | None = None
-        if extra_id:
+        extra_duration: int | None = None
+        extra_description: str | None = None
+        if isinstance(extra_obj, dict) and extra_obj:
+            extra_id = extra_obj.get("poi_id", "")
             extra = _find_poi(extra_id, poi_map)
             if extra is None:
                 logger.warning(
-                    "PlanningNode: 方案 %d 引用了无效 extra_activity_id=%r，忽略附加活动",
+                    "PlanningNode: 方案 %d 引用了无效 extra poi_id=%r，忽略附加活动",
                     idx, extra_id,
                 )
+            else:
+                raw_dur = extra_obj.get("duration_minutes")
+                if isinstance(raw_dur, (int, float)) and raw_dur > 0:
+                    extra_duration = int(raw_dur)
+                desc = extra_obj.get("description", "")
+                if isinstance(desc, str) and desc.strip():
+                    extra_description = desc.strip()
 
-        plan = _build_plan(intent, activity, restaurant, extra, idx)
+        plan = _build_plan(
+            intent, activity, restaurant, extra, idx,
+            activity_duration=activity_duration,
+            meal_duration=meal_duration,
+            extra_duration=extra_duration,
+            activity_description=activity_description,
+            meal_description=meal_description,
+            extra_description=extra_description,
+        )
 
         # 将 LLM 的描述性字段覆盖到方案上（如果 LLM 提供了的话）
         plan_title = raw.get("plan_title", "").strip()
@@ -453,11 +446,8 @@ def _plans_from_llm_response(
         if plan_summary:
             plan = plan.model_copy(update={"summary": plan_summary})
 
-        # 将 _build_plan 生成的英文描述本地化为中文
+        # 将 _build_plan 生成的英文描述本地化为中文（transit 步骤仍需本地化）
         plan = _localize_plan(plan, intent, extra, poi_map)
-
-        # 填充时间窗口：确保方案步骤覆盖完整时间窗口
-        plan = _fill_time_window(plan, intent)
 
         plans.append(plan)
 
@@ -512,9 +502,17 @@ class PlanningNode(BaseNode):
             ))
             return state
 
+        rejection_reason = state.verifier_rejection_reason
+        preference_adjustments = state.preference_adjustments or None
+
         if state.retrieval_strategies:
             # 新路径：每个策略独立生成 1 个方案，并行执行
-            plans = await self._plan_from_strategies(intent, state.retrieval_strategies)
+            plans = await self._plan_from_strategies(
+                intent,
+                state.retrieval_strategies,
+                rejection_reason,
+                preference_adjustments,
+            )
         else:
             # 旧路径：从单一候选池让 LLM 选出 2-3 个方案（向后兼容）
             if retrieval is None:
@@ -527,31 +525,53 @@ class PlanningNode(BaseNode):
             plans = await self._generate_with_llm(
                 intent,
                 retrieval,
-                state.verifier_rejection_reason,
-                state.preference_adjustments,
+                rejection_reason,
+                preference_adjustments,
             )
 
-        if not plans and retrieval is not None:
-            # LLM 路径失败，回退到规则方式（仅旧路径有 retrieval 可用）
-            logger.info("PlanningNode: LLM 路径未产生有效方案，回退到规则生成")
-            state.trace.append(TraceEvent(
-                agent=self.name,
-                status="running",
-                message="LLM 生成失败，回退到规则方式生成方案...",
-            ))
-            fallback_plans = self._fallback_generate(intent, retrieval)
-            # 回退路径同样需要本地化和时间窗口填充
-            poi_map = {
-                poi.id: poi
-                for poi in [*retrieval.activities, *retrieval.restaurants]
-            }
-            plans = [
-                _fill_time_window(
-                    _localize_plan(p, intent, None, poi_map),
-                    intent,
+        if not plans:
+            # LLM 路径失败，回退到规则方式
+            # 多策略路径：从 retrieval_strategies 聚合所有候选 POI 构造合并候选池
+            # 旧路径：直接使用 state.retrieval
+            if state.retrieval_strategies:
+                merged_activities: list = []
+                merged_restaurants: list = []
+                seen_ids: set[str] = set()
+                for strategy in state.retrieval_strategies:
+                    for poi in strategy.activities:
+                        if poi.id not in seen_ids:
+                            merged_activities.append(poi)
+                            seen_ids.add(poi.id)
+                    for poi in strategy.restaurants:
+                        if poi.id not in seen_ids:
+                            merged_restaurants.append(poi)
+                            seen_ids.add(poi.id)
+                fallback_retrieval = RetrievalResult(
+                    activities=merged_activities,
+                    restaurants=merged_restaurants,
                 )
-                for p in fallback_plans
-            ]
+            elif retrieval is not None:
+                fallback_retrieval = retrieval
+            else:
+                fallback_retrieval = None
+
+            if fallback_retrieval is not None:
+                logger.info("PlanningNode: LLM 路径未产生有效方案，回退到规则生成")
+                state.trace.append(TraceEvent(
+                    agent=self.name,
+                    status="running",
+                    message="LLM 生成失败，回退到规则方式生成方案...",
+                ))
+                fallback_plans = self._fallback_generate(intent, fallback_retrieval)
+                # 回退路径：本地化步骤描述
+                poi_map = {
+                    poi.id: poi
+                    for poi in [*fallback_retrieval.activities, *fallback_retrieval.restaurants]
+                }
+                plans = [
+                    _localize_plan(p, intent, None, poi_map)
+                    for p in fallback_plans
+                ]
 
         # 为每个方案生成可执行动作列表
         plans = generate_actions(intent, plans)
@@ -623,6 +643,8 @@ class PlanningNode(BaseNode):
         self,
         intent: UserIntentSchema,
         retrieval_result: RetrievalResult,
+        rejection_reason: str | None = None,
+        preference_adjustments: list[str] | None = None,
     ) -> list[PlanSchema]:
         """针对单个 RetrievalResult（含 style）调用 LLM，要求只生成 1 个最优方案。
 
@@ -633,7 +655,10 @@ class PlanningNode(BaseNode):
             LLMMessage(role="system", content=_SINGLE_PLAN_SYSTEM_PROMPT),
             LLMMessage(
                 role="user",
-                content=_build_user_message_single(intent, retrieval_result, style),
+                content=_build_user_message_single(
+                    intent, retrieval_result, style,
+                    rejection_reason, preference_adjustments,
+                ),
             ),
         ]
 
@@ -673,19 +698,65 @@ class PlanningNode(BaseNode):
         self,
         intent: UserIntentSchema,
         retrieval_strategies: list[RetrievalResult],
+        rejection_reason: str | None = None,
+        preference_adjustments: list[str] | None = None,
     ) -> list[PlanSchema]:
-        """并行对每个搜索策略调用 LLM，各自生成 1 个方案，合并为候选列表。"""
+        """并行对每个搜索策略调用 LLM，各自生成 1 个方案，合并为候选列表。
+
+        每个策略的方案 ID 包含策略序号（plan_s0_1、plan_s1_1、plan_s2_1），
+        保证跨策略 ID 全局唯一，同时允许 _plan_from_strategies 在重试时
+        通过 ID 前缀将 rejection reason 精确路由回对应策略（Bug 4 修复）。
+        """
         tasks = [
-            self._call_llm_single_plan(intent, strategy)
-            for strategy in retrieval_strategies
+            self._call_llm_single_plan(
+                intent,
+                strategy,
+                self._filter_rejection_reason_for_strategy(
+                    rejection_reason, strategy_idx
+                ),
+                preference_adjustments,
+            )
+            for strategy_idx, strategy in enumerate(retrieval_strategies)
         ]
-        results_per_strategy: list[list[PlanSchema]] = await asyncio.gather(*tasks)
+        results_per_strategy: list[list[PlanSchema] | BaseException] = (
+            await asyncio.gather(*tasks, return_exceptions=True)
+        )
 
         plans: list[PlanSchema] = []
-        for strategy_plans in results_per_strategy:
-            plans.extend(strategy_plans)
+        for strategy_idx, result in enumerate(results_per_strategy):
+            if isinstance(result, BaseException):
+                logger.warning(
+                    "PlanningNode: 策略 %r 的并行调用抛出未捕获异常，跳过: %s",
+                    retrieval_strategies[strategy_idx].style,
+                    result,
+                )
+                continue
+            for local_idx, plan in enumerate(result, start=1):
+                # 赋予含策略序号的 ID，使跨策略计划 ID 全局唯一
+                strategy_scoped_id = f"plan_s{strategy_idx}_{local_idx}"
+                plans.append(plan.model_copy(update={"id": strategy_scoped_id}))
 
         return plans
+
+    @staticmethod
+    def _filter_rejection_reason_for_strategy(
+        rejection_reason: str | None,
+        strategy_idx: int,
+    ) -> str | None:
+        """从全局 rejection_reason 字符串中过滤出属于指定策略的行。
+
+        每行格式为"方案 plan_sN_M（...）：..."，只保留 N == strategy_idx 的行。
+        若过滤后无内容，返回 None（不向该策略传递不相关的拒绝原因）。
+        """
+        if not rejection_reason:
+            return None
+
+        prefix = f"plan_s{strategy_idx}_"
+        relevant_lines = [
+            line for line in rejection_reason.splitlines()
+            if prefix in line
+        ]
+        return "\n".join(relevant_lines) if relevant_lines else None
 
     # ------------------------------------------------------------------
     # 规则降级路径

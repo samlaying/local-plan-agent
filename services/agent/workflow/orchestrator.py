@@ -29,7 +29,7 @@ from agent.nodes.profile_node import ProfileNode
 from agent.nodes.retrieval_node import RetrievalNode
 from agent.nodes.verifier_node import VerifierNode
 from agent.session.session import Session
-from agent.state.types import PlanningState
+from agent.state.types import MAX_CLARIFICATION_COUNT, PlanningState
 from app.core.llm import get_llm_client
 from app.repositories.mock_poi_repository import MockPOIRepository
 from app.repositories.user_profile_repository import UserProfileRepository
@@ -41,8 +41,7 @@ logger = logging.getLogger(__name__)
 # Planning + Verifier 最大回环次数
 MAX_PLAN_REVISION = 2
 
-# Clarification 最大追问次数（与 IntentParserNode.MAX_CLARIFICATION_COUNT 保持一致）
-MAX_CLARIFICATION_COUNT = 2
+# MAX_CLARIFICATION_COUNT 从 agent.state.types 导入，与 IntentParserNode 共享同一常量
 
 # 用户拒绝方案后最大重检索规划次数
 MAX_PREFERENCE_REVISION = 3
@@ -117,7 +116,7 @@ async def run_orchestrator(session: Session) -> None:
             poi_searcher = AmapSearcher()
         retrieval_node = RetrievalNode(searcher=poi_searcher, llm_client=llm_client)
         planning_node = PlanningNode(llm_client=llm_client)
-        verifier_node = VerifierNode()
+        verifier_node = VerifierNode(llm_client=llm_client)
 
         await _phase_start(session)
         await _phase_intent(session, intent_node)
@@ -457,9 +456,21 @@ async def _phase_execution(
     })
 
     # FeedbackNode：fire-and-forget，在发 done 之前触发
+    # 不 await，避免阻塞 done 消息发送；但加 done callback 确保异常不静默丢失。
+    def _on_feedback_done(task: asyncio.Task) -> None:
+        exc = task.exception() if not task.cancelled() else None
+        if exc is not None:
+            logger.warning(
+                "FeedbackNode task failed (session=%s): %s",
+                session.session_id,
+                exc,
+                exc_info=exc,
+            )
+
     feedback_repo = UserProfileRepository()
     feedback_node = FeedbackNode(repository=feedback_repo)
-    asyncio.create_task(feedback_node.run(session.state))
+    feedback_task = asyncio.create_task(feedback_node.run(session.state))
+    feedback_task.add_done_callback(_on_feedback_done)
 
     await _send(session, {
         "type": "done",

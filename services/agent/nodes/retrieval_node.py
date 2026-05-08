@@ -1,20 +1,23 @@
 """
-RetrievalNode — 并行获取天气/路线 + 3 个独立策略 ReAct 循环。
+RetrievalNode — 并行获取天气/路线（主路径）+ 3 个独立策略 ReAct 循环（策略路径）。
 
-结构：
-  主路径（并行）：
-    - 天气查询    — mock，预留真实 API
-    - 路线距离    — 从 routes.json 读取，供 PlanningNode 参考
-    结果写入 state.retrieval（activities/restaurants 为空列表，仅 weather/route_info 有效）
+主路径（并行）：
+  - 天气查询    — mock，预留真实 API
+  - 路线信息    — 从 routes.json 读取静态路线（origin + static_routes）
+  结果写入 state.retrieval（activities/restaurants 为空列表，仅 weather/route_info 有效）
 
-  策略路径（3 个独立 LLM ReAct 循环，并行）：
-    每个循环持有完全隔离的 LLM 对话上下文：
-      1. LLM 根据 style_hint 和 intent 生成搜索关键词（循环外，只调用一次）
-      2. 用生成的关键词搜索 AMap（activity + restaurant）
-      3. 观察候选数量，候选充足则退出；不足则调用 LLM 调整关键词，最多 3 轮
-    结果写入 state.retrieval_strategies，PlanningNode 优先使用这些候选集
+策略路径（3 个独立 LLM ReAct 循环，并行）：
+  每个循环持有完全隔离的 LLM 对话上下文：
+    1. LLM 根据 style_hint 和 intent 生成搜索关键词（循环外调用一次）
+    2. 用生成的关键词搜索 AMap（activity + restaurant）
+    3. 把所有候选 POI 的关键字段序列化后喂给 LLM，由 LLM 判断是否满意；
+       LLM 返回 satisfied=true 时退出，否则给出新关键词继续搜，最多 3 轮
+  结果写入 state.retrieval_strategies，PlanningNode 优先使用这些候选集
 
-  state.retrieval 仅作为 fallback（三个策略全挂时）和 weather/route_info 来源。
+state.retrieval 仅作为三策略全挂时的 fallback 和 weather/route_info 来源。
+
+注意：各 POI 的出行时间（travel_minutes）直接存储在 POISchema 对象上，
+PlanningNode 序列化 POI 列表时直接读取，不依赖 route_info 中的任何映射。
 """
 
 from __future__ import annotations
@@ -36,10 +39,6 @@ from tools.poi.base import AbstractPOISearcher
 
 logger = logging.getLogger(__name__)
 
-# 策略关键词不足时的默认阈值
-_MIN_ACTIVITIES = 3
-_MIN_RESTAURANTS = 2
-
 # 默认关键词（LLM 解析失败时使用）
 _DEFAULT_ACTIVITY_KEYWORDS = "景点|公园|休闲"
 _DEFAULT_ACTIVITY_TYPES = "110000|080000"
@@ -52,14 +51,25 @@ _DEFAULT_RESTAURANT_TYPES = "050000"
 # ---------------------------------------------------------------------------
 
 class RetrievalNode(BaseNode):
-    """并行执行 5 个检索子任务，将结果合并为 RetrievalResult 写入 state.retrieval。
+    """主路径 + 策略路径并行检索节点，结果写入 state.retrieval / state.retrieval_strategies。
 
-    同时并行运行 3 个独立上下文的 LLM ReAct 策略循环，生成 retrieval_strategies。
+    主路径（并行）：
+      - 天气查询    — mock，预留真实 API
+      - 路线信息    — 从 routes.json 读取静态路线（origin + static_routes）
+
+    策略路径（3 个独立 LLM ReAct 循环，并行）：
+      每个循环拥有完全隔离的 LLM 对话上下文：
+        1. LLM 根据 style_hint 和 intent 生成搜索关键词（循环外调用一次）
+        2. 用生成的关键词搜索 AMap（activity + restaurant）
+        3. 把所有候选 POI 的关键字段序列化后喂给 LLM，由 LLM 判断是否满意；
+         LLM 返回 satisfied=true 时退出，否则给出新关键词继续搜，最多 3 轮
+      结果写入 state.retrieval_strategies，PlanningNode 优先使用这些候选集。
+
+    state.retrieval 仅作为三策略全挂时的 fallback 和 weather/route_info 来源。
 
     依赖注入：
       searcher    — AbstractPOISearcher（MockPOISearcher 或 AmapSearcher）
       llm_client  — LLMClient（用于策略 ReAct 循环中动态生成关键词）
-      repository  — MockPOIRepository（或后续真实 POI 适配器）
       routes_path — routes.json 文件路径；None 时自动从项目根目录推断
     """
 
@@ -72,8 +82,51 @@ class RetrievalNode(BaseNode):
     ) -> None:
         self._searcher = searcher
         self._llm_client = llm_client
-        self._repository = repository or MockPOIRepository()
+        # repository 参数保留以维持向后兼容的构造函数签名，当前实现未使用
         self._routes_path = routes_path or self._default_routes_path()
+
+    # ------------------------------------------------------------------
+    # 内部辅助：POI 列表序列化为可读文本（供 Observe 步骤使用）
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _serialize_candidates(
+        activities: list[POISchema],
+        restaurants: list[POISchema],
+    ) -> str:
+        """将活动和餐厅候选列表序列化为简洁可读的文本，供 LLM Observe 步骤使用。
+
+        序列化字段：名称、类别、评分、距离（km）、营业时间、推荐游玩时长（min）。
+        """
+        lines: list[str] = []
+
+        if activities:
+            lines.append(f"【活动候选 {len(activities)} 条】")
+            for i, poi in enumerate(activities, 1):
+                lines.append(
+                    f"  {i}. {poi.name}（{poi.subcategory}）"
+                    f" | 评分 {poi.rating}/5"
+                    f" | 距离 {poi.distance_km:.1f}km"
+                    f" | 营业 {poi.business_hours.open}–{poi.business_hours.close}"
+                    f" | 推荐游玩 {poi.recommended_duration_minutes}min"
+                )
+        else:
+            lines.append("【活动候选 0 条】")
+
+        if restaurants:
+            lines.append(f"【餐厅候选 {len(restaurants)} 条】")
+            for i, poi in enumerate(restaurants, 1):
+                lines.append(
+                    f"  {i}. {poi.name}（{poi.subcategory}）"
+                    f" | 评分 {poi.rating}/5"
+                    f" | 距离 {poi.distance_km:.1f}km"
+                    f" | 营业 {poi.business_hours.open}–{poi.business_hours.close}"
+                    f" | 推荐游玩 {poi.recommended_duration_minutes}min"
+                )
+        else:
+            lines.append("【餐厅候选 0 条】")
+
+        return "\n".join(lines)
 
     @staticmethod
     def _default_routes_path() -> Path:
@@ -171,10 +224,13 @@ class RetrievalNode(BaseNode):
         流程：
           1. 初始化 messages（system + user），请 LLM 生成搜索关键词
           2. 调用 LLM，解析返回的关键词 JSON
-          3. 并行搜索活动和餐厅候选
-          4. 将观察结果追加到 messages，请 LLM 判断是否满意
-          5. 若满意或达到上限 → 退出；否则用 LLM 返回的新关键词继续迭代
+          3. 用关键词搜索活动和餐厅候选
+          4. 把全部候选 POI 的关键字段序列化后追加到 messages，请 LLM 判断是否满意
+          5. LLM 返回 satisfied=true → 退出；返回新关键词 → 继续迭代；达到上限 → 退出
           6. 对最终结果做营业时间过滤，返回 RetrievalResult
+
+        LLM 是唯一的质量仲裁者：代码不再依据数量硬性判断是否充足，
+        而是把完整候选列表喂给 LLM，由 LLM 判断"结果够不够、风格对不对"。
 
         Args:
             intent:         用户规划意图，包含城市、场景、时间窗口、人数等。
@@ -195,8 +251,11 @@ class RetrievalNode(BaseNode):
             '  "activity_types"     — 高德 POI 类型代码（用 | 分隔，如"110000|080000"）\n'
             '  "restaurant_keywords"— 餐厅搜索关键词（如"亲子友好|健康轻食"）\n'
             '  "restaurant_types"   — 餐厅 POI 类型代码（通常为"050000"）\n'
-            "当你对搜索结果满意时，返回：{\"satisfied\": true}\n"
-            "当你需要调整关键词时，返回新的关键词 JSON（同上格式）。\n"
+            "每轮搜索结束后，你会收到所有候选 POI 的详情列表（名称、类别、评分、距离、营业时间、推荐游玩时长）。\n"
+            f"请仔细阅读候选列表，综合判断：这批候选的数量和质量是否足以支撑「{style_hint}」风格的完整行程规划？\n"
+            "判断要点：候选数量是否充足、评分和品类是否符合该风格、是否有足够选择余地。\n"
+            "如果满意，返回：{\"satisfied\": true}\n"
+            "如果不满意（数量不足、评分偏低、风格不符等），返回新的关键词 JSON（同上格式）并说明调整原因。\n"
             "不要包含任何其他内容，直接返回纯 JSON。"
         )
 
@@ -292,37 +351,18 @@ class RetrievalNode(BaseNode):
                 self.name, style_hint, iteration, len(activities), len(restaurants),
             )
 
-            # ------ Observe：构造观察消息，追加到 messages ------
+            # ------ Observe：把完整候选列表序列化后追加到 messages，让 LLM 评判 ------
+            candidates_text = self._serialize_candidates(activities, restaurants)
             observation = (
-                f"搜索结果：活动候选 {len(activities)} 条，餐厅候选 {len(restaurants)} 条。\n"
+                f"本轮搜索结果如下（共活动 {len(activities)} 条、餐厅 {len(restaurants)} 条）：\n"
+                f"{candidates_text}\n\n"
+                f"请仔细阅读以上候选列表，判断它们是否数量充足、质量达标、风格符合「{style_hint}」方向。"
+                "满意则返回 {\"satisfied\": true}，"
+                "否则返回新的关键词 JSON 并说明调整原因。"
             )
-            sufficient = (
-                len(activities) >= _MIN_ACTIVITIES and len(restaurants) >= _MIN_RESTAURANTS
-            )
-            if sufficient:
-                observation += "候选数量充足。"
-            else:
-                shortage_parts: list[str] = []
-                if len(activities) < _MIN_ACTIVITIES:
-                    shortage_parts.append(f"活动不足（需至少 {_MIN_ACTIVITIES} 条）")
-                if len(restaurants) < _MIN_RESTAURANTS:
-                    shortage_parts.append(f"餐厅不足（需至少 {_MIN_RESTAURANTS} 条）")
-                observation += (
-                    f"{'、'.join(shortage_parts)}，请调整关键词重新搜索"
-                    f"（返回新的关键词 JSON）。"
-                )
-
             messages.append(LLMMessage(role="user", content=observation))
 
-            # 候选已充足，直接退出，无需再问 LLM（避免 LLM 否定充足结果）
-            if sufficient:
-                logger.debug(
-                    "[%s] strategy=%r: candidates sufficient at iteration %d, break",
-                    self.name, style_hint, iteration,
-                )
-                break
-
-            # 最后一次迭代，不再调用 LLM，直接退出
+            # 最后一次迭代，不再调用 LLM，直接退出（兜底）
             if iteration == max_iterations - 1:
                 break
 
@@ -404,24 +444,22 @@ class RetrievalNode(BaseNode):
     # ------------------------------------------------------------------
 
     async def _fetch_routes(self, intent: UserIntentSchema) -> dict[str, Any]:
-        """从 routes.json 整理路线信息，并补充 POI 的 travel_minutes 字段数据。
+        """从 routes.json 读取静态路线信息。
 
-        routes.json 文件读取和 list_all() 均为同步 IO，通过 run_in_executor 放入
-        线程池执行，避免阻塞 event loop。
+        routes.json 文件读取为同步 IO，通过 run_in_executor 放入线程池执行，
+        避免阻塞 event loop。
 
         返回格式：
         {
           "origin": "...",
-          "static_routes": [...],          # routes.json 原始条目
-          "poi_travel_minutes": {          # poi_id -> travel_minutes（来自 POI 字段）
-              "family_activity_001": 14,
-              ...
-          }
+          "static_routes": [...],   # routes.json 原始条目
         }
+
+        注意：此处不再构建 poi_id → travel_minutes 映射。各 POI 的出行时间
+        直接存储在 POISchema.travel_minutes 字段上，PlanningNode 在序列化 POI
+        列表时直接读取该字段，无需通过 route_info 中转。
         """
         loop = asyncio.get_running_loop()
-
-        # 读取 routes.json（同步文件 IO，放入线程池）
         routes_path = self._routes_path
 
         def _load_routes() -> list[dict[str, Any]]:
@@ -435,26 +473,11 @@ class RetrievalNode(BaseNode):
                 logger.warning("[%s] routes.json parse error: %s", self.name, exc)
                 return []
 
-        # list_all() 也是同步 IO（读两个 JSON 文件），同样放入线程池
-        def _load_all_pois() -> list[POISchema]:
-            return self._repository.list_all()
-
-        static_routes, all_pois = await asyncio.gather(
-            loop.run_in_executor(None, _load_routes),
-            loop.run_in_executor(None, _load_all_pois),
-        )
-
-        # 从所有 POI 的 travel_minutes 字段汇总（按出发地 origin 整理）
-        poi_travel_minutes: dict[str, int] = {
-            poi.id: poi.travel_minutes
-            for poi in all_pois
-            if intent.scenario in poi.suitable_scenarios and poi.city == intent.city
-        }
+        static_routes = await loop.run_in_executor(None, _load_routes)
 
         return {
             "origin": intent.origin,
             "static_routes": static_routes,
-            "poi_travel_minutes": poi_travel_minutes,
         }
 
     # ------------------------------------------------------------------
