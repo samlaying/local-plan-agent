@@ -160,7 +160,28 @@ def generate_plans(intent: UserIntentSchema, candidates: ConstraintCheckResult) 
     for index, activity in enumerate(ranked_activities[:3]):
         restaurant = ranked_restaurants[index % len(ranked_restaurants)]
         extra = _pick_extra_activity(intent, ranked_activities, activity, index)
-        plans.append(_build_plan(intent, activity, restaurant, extra, index + 1))
+        steps_spec: list[dict] = [
+            {
+                "poi": activity,
+                "type": "activity",
+                "duration_minutes": min(activity.recommended_duration_minutes, 150),
+                "description": None,
+            }
+        ]
+        if extra is not None:
+            steps_spec.append({
+                "poi": extra,
+                "type": "activity",
+                "duration_minutes": min(extra.recommended_duration_minutes, 75),
+                "description": None,
+            })
+        steps_spec.append({
+            "poi": restaurant,
+            "type": "meal",
+            "duration_minutes": min(restaurant.recommended_duration_minutes, 90),
+            "description": None,
+        })
+        plans.append(_build_plan_from_steps(intent, steps_spec, index + 1))
     return plans
 
 
@@ -357,67 +378,6 @@ def _is_open_for_window(poi: POISchema, intent: UserIntentSchema) -> bool:
     return open_at <= start < close_at and open_at < end <= close_at + 90
 
 
-def _build_plan(
-    intent: UserIntentSchema,
-    activity: POISchema,
-    restaurant: POISchema,
-    extra: POISchema | None,
-    index: int,
-    activity_duration: int | None = None,
-    meal_duration: int | None = None,
-    extra_duration: int | None = None,
-    activity_description: str | None = None,
-    meal_description: str | None = None,
-    extra_description: str | None = None,
-) -> PlanSchema:
-    start = _parse_datetime(intent.time_window.date, intent.time_window.start or "14:00")
-    steps: list[ItineraryStepSchema] = []
-
-    current = start
-    steps.append(_transit_step("transit_start", "Depart from origin", current, activity.travel_minutes))
-    current += timedelta(minutes=activity.travel_minutes)
-
-    activity_minutes = activity_duration if activity_duration is not None else min(activity.recommended_duration_minutes, 150)
-    steps.append(_poi_step("activity_main", activity, current, activity_minutes, description=activity_description))
-    current += timedelta(minutes=activity_minutes)
-
-    if extra is not None:
-        steps.append(_transit_step("transit_extra", f"Move to {extra.name}", current, max(8, extra.travel_minutes // 2)))
-        current += timedelta(minutes=max(8, extra.travel_minutes // 2))
-        extra_minutes = extra_duration if extra_duration is not None else min(extra.recommended_duration_minutes, 75)
-        steps.append(_poi_step("extra_activity", extra, current, extra_minutes, step_type="extra", description=extra_description))
-        current += timedelta(minutes=extra_minutes)
-
-    steps.append(_transit_step("transit_meal", f"Move to {restaurant.name}", current, max(10, restaurant.travel_minutes // 2)))
-    current += timedelta(minutes=max(10, restaurant.travel_minutes // 2))
-
-    meal_minutes = meal_duration if meal_duration is not None else min(restaurant.recommended_duration_minutes, 90)
-    steps.append(_poi_step("meal", restaurant, current, meal_minutes, step_type="meal", description=meal_description))
-    current += timedelta(minutes=meal_minutes)
-
-    total_minutes = int((current - start).total_seconds() // 60)
-    pois = [activity, restaurant] if extra is None else [activity, extra, restaurant]
-    cost_min = sum(poi.price_per_person for poi in pois) * _participant_count(intent)
-    cost_max = int(cost_min * 1.2)
-    score = round(sum(_poi_score(intent, poi) for poi in pois) / len(pois), 1)
-
-    return PlanSchema(
-        id=f"plan_{index}",
-        title=_plan_title(intent, activity, restaurant, index),
-        summary=_plan_summary(intent, activity, restaurant, extra),
-        scenario=intent.scenario,
-        total_duration_minutes=total_minutes,
-        estimated_cost_min=cost_min,
-        estimated_cost_max=cost_max,
-        score=score,
-        risk_level="low",
-        steps=steps,
-        pois=pois,
-        actions=[],
-        fit_summary=_fit_summary(intent, activity, restaurant, extra),
-        tradeoffs=[],
-    )
-
 
 def _build_plan_from_steps(
     intent: UserIntentSchema,
@@ -589,46 +549,6 @@ def _attach_step_risks(step: ItineraryStepSchema, plan_risks: list[str]) -> Itin
         return step
     return step.model_copy(update={"risks": [*step.risks, *plan_risks]})
 
-
-def _fit_summary(
-    intent: UserIntentSchema,
-    activity: POISchema,
-    restaurant: POISchema,
-    extra: POISchema | None,
-) -> list[str]:
-    if intent.scenario == "family_weight_loss_child5":
-        summary = [
-            "Main activity is suitable for a 5-year-old child.",
-            "Restaurant has weight-loss-friendly options.",
-        ]
-    else:
-        summary = [
-            "Activity supports a four-person friends scenario.",
-            "Restaurant works for a mixed-gender group and conversation.",
-        ]
-    if extra is not None:
-        summary.append("Extra activity can be skipped if time or queue pressure increases.")
-    return summary
-
-
-def _plan_title(intent: UserIntentSchema, activity: POISchema, restaurant: POISchema, index: int) -> str:
-    if intent.scenario == "family_weight_loss_child5":
-        return f"Family plan {index}: {activity.name} + {restaurant.name}"
-    return f"Friends plan {index}: {activity.name} + {restaurant.name}"
-
-
-def _plan_summary(
-    intent: UserIntentSchema,
-    activity: POISchema,
-    restaurant: POISchema,
-    extra: POISchema | None,
-) -> str:
-    base = f"{activity.name} first, then dinner at {restaurant.name}."
-    if extra is not None:
-        base = f"{activity.name}, optional {extra.name}, then dinner at {restaurant.name}."
-    if intent.scenario == "family_weight_loss_child5":
-        return f"{base} Prioritizes short travel, child fit, and lighter food."
-    return f"{base} Prioritizes group interaction, balanced activity intensity, and easy dining."
 
 
 def _participant_count(intent: UserIntentSchema) -> int:

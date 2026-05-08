@@ -7,7 +7,7 @@ PlanningNode — 根据 Retrieval Node 的候选 POI，调用 LLM 生成 2-3 个
 3. 如果存在 preference_adjustments，在 prompt 末尾追加用户偏好调整要求
 4. LLM 返回 JSON，包含每个方案选择的 POI id 和顺序
 5. 根据 LLM 选择从 retrieval_result 中找到对应 POI 对象
-6. 复用 activity_workflow 中的 _build_plan / generate_actions 组装完整 PlanSchema
+6. 复用 activity_workflow 中的 _build_plan_from_steps / generate_actions 组装完整 PlanSchema
 7. 降级：LLM 失败时回退到纯规则的 generate_plans
 
 节点约束：
@@ -28,7 +28,6 @@ from agent.state.types import PlanningState, RetrievalResult, TraceEvent
 from app.schemas.planning import ItineraryStepSchema, PlanSchema, POISchema, UserIntentSchema
 from app.services.activity_workflow import (
     ConstraintCheckResult,
-    _build_plan,
     _build_plan_from_steps,
     generate_actions,
     generate_plans,
@@ -272,7 +271,7 @@ def _build_user_message_single(
 
 
 # ---------------------------------------------------------------------------
-# 中文本地化：将 _build_plan 生成的英文描述替换为中文
+# 中文本地化：将 _build_plan_from_steps 生成的英文描述替换为中文
 # ---------------------------------------------------------------------------
 
 def _localize_step(step: ItineraryStepSchema, poi_map: dict[str, POISchema]) -> ItineraryStepSchema:
@@ -303,7 +302,7 @@ def _localize_step(step: ItineraryStepSchema, poi_map: dict[str, POISchema]) -> 
 
 
 def _localize_fit_summary(intent: UserIntentSchema, extra_poi: POISchema | None) -> list[str]:
-    """生成中文版 fit_summary，替代 _build_plan 生成的英文版本。"""
+    """生成中文版 fit_summary，替代 _build_plan_from_steps 生成的英文版本。"""
     if intent.scenario == "family_weight_loss_child5":
         summary = [
             "主要活动适合 5 岁孩子参与。",
@@ -325,7 +324,7 @@ def _localize_plan(
     extra_poi: POISchema | None,
     poi_map: dict[str, POISchema],
 ) -> PlanSchema:
-    """对 _build_plan 输出的方案进行中文本地化处理。
+    """对 _build_plan_from_steps 输出的方案进行中文本地化处理。
 
     处理内容：
     - 将 steps 中的英文 description 替换为中文
