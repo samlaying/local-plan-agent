@@ -30,7 +30,8 @@
       "Bash(where python *)",
       "Bash(uv run *)",
       "Bash(uv sync *)",
-      "Bash(dir services *)"
+      "Bash(dir services *)",
+      "Bash(git rebase *)"
     ]
   }
 }

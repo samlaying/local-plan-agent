@@ -576,6 +576,35 @@ class PlanningNode(BaseNode):
         # 为每个方案生成可执行动作列表
         plans = generate_actions(intent, plans)
 
+        # 时间窗口覆盖检查
+        window_minutes: int | None = None
+        tw = intent.time_window
+        if tw.start is not None and tw.end is not None:
+            try:
+                _sh, _sm = (int(x) for x in tw.start.split(":"))
+                _eh, _em = (int(x) for x in tw.end.split(":"))
+                window_minutes = (_eh * 60 + _em) - (_sh * 60 + _sm)
+            except (ValueError, AttributeError):
+                pass
+        if window_minutes is None and intent.duration_hours_min > 0:
+            window_minutes = int(intent.duration_hours_min * 60)
+
+        if window_minutes and window_minutes > 0:
+            for plan in plans:
+                coverage = plan.total_duration_minutes / window_minutes
+                if coverage < 0.7:
+                    msg = (
+                        f"方案「{plan.title}」总时长 {plan.total_duration_minutes} 分钟，"
+                        f"仅覆盖用户时间窗口 {window_minutes} 分钟的 {coverage:.0%}，"
+                        f"未充分覆盖时间窗口（阈值 70%）"
+                    )
+                    state.trace.append(TraceEvent(
+                        agent=self.name,
+                        status="running",
+                        message=msg,
+                    ))
+                    logger.warning("PlanningNode: %s", msg)
+
         state.candidate_plans = plans
         state.trace.append(TraceEvent(
             agent=self.name,

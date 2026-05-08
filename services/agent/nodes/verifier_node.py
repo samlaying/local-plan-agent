@@ -392,14 +392,55 @@ class VerifierNode(BaseNode):
         # 第二阶段：LLM Critic（仅 llm_client 不为 None 时执行）
         # ------------------------------------------------------------------
         if self._llm is None:
-            state.trace.append(TraceEvent(
-                agent=self.name,
-                status="done",
-                message=(
-                    f"LLM Critic 已跳过（llm_client=None），"
-                    f"剩余 {len(state.candidate_plans)} 个方案通过校验"
-                ),
-            ))
+            degraded_rejection_batch: list[dict[str, Any]] = []
+            for plan in state.candidate_plans:
+                issues = _collect_rule_checks(intent, plan)
+                degrade_violations = [
+                    issue for issue in issues
+                    if issue.get("rule") in ("business_hours", "low_rating")
+                ]
+                if degrade_violations:
+                    degraded_rejection_batch.append({
+                        "plan_id": plan.id,
+                        "plan_title": plan.title,
+                        "violations": degrade_violations,
+                        "stage": "hard_constraint",
+                    })
+
+            if degraded_rejection_batch:
+                failed_ids = {r["plan_id"] for r in degraded_rejection_batch}
+                state.candidate_plans = [
+                    p for p in state.candidate_plans if p.id not in failed_ids
+                ]
+                state.plan_revision_count += 1
+                state.verifier_rejection_reasons.append(degraded_rejection_batch)
+
+                state.trace.append(TraceEvent(
+                    agent=self.name,
+                    status="done",
+                    message=(
+                        f"退化路径额外校验：{len(degraded_rejection_batch)} 个方案"
+                        f"因营业时间或评分问题已移除，"
+                        f"剩余 {len(state.candidate_plans)} 个方案通过校验"
+                    ),
+                ))
+                logger.warning(
+                    "[%s] Degraded path: %d plans rejected by business_hours/low_rating: %s",
+                    self.name,
+                    len(degraded_rejection_batch),
+                    sorted(failed_ids),
+                )
+            else:
+                state.trace.append(TraceEvent(
+                    agent=self.name,
+                    status="done",
+                    message=(
+                        f"LLM Critic 已跳过（llm_client=None），"
+                        f"剩余 {len(state.candidate_plans)} 个方案通过校验"
+                    ),
+                ))
+
+
             logger.info(
                 "[%s] LLM Critic skipped (no llm_client), %d plans passed",
                 self.name,
@@ -489,7 +530,7 @@ class VerifierNode(BaseNode):
                 lambda: self._llm.chat(
                     messages,
                     temperature=0.3,
-                    max_tokens=2048,
+                    max_tokens=3072,
                     json_mode=True,
                 ),
             )
