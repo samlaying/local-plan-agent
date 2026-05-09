@@ -167,10 +167,7 @@ class RetrievalNode(BaseNode):
 
         # 策略路径：3 个独立 ReAct 循环并行，各自用 LLM 生成关键词并搜索
         scenario = intent.scenario if intent.scenario else ""
-        if scenario == "friends_4_mixed_gender":
-            style_hints = ["户外打卡", "娱乐社交", "文艺探索"]
-        else:
-            style_hints = ["亲子户外", "文化艺术", "休闲社交"]
+        style_hints = await self._generate_style_hints(intent, scenario)
 
         strategy_tasks = [
             asyncio.create_task(
@@ -206,6 +203,90 @@ class RetrievalNode(BaseNode):
             ),
         ))
         return state
+
+    # ------------------------------------------------------------------
+    # 策略方向生成
+    # ------------------------------------------------------------------
+
+    async def _generate_style_hints(
+        self,
+        intent: UserIntentSchema,
+        scenario: str,
+    ) -> list[str]:
+        """调用 LLM 根据用户原始输入动态生成 3 个策略搜索方向。
+
+        Args:
+            intent:   用户规划意图（含 raw_text 等原始输入字段）。
+            scenario: 场景标识，如 "friends_4_mixed_gender"、"family_weight_loss_child5"。
+
+        Returns:
+            list[str] — 3 个短中文策略方向（2-4 字），如 ["亲子户外", "文化艺术", "休闲社交"]。
+        """
+        # LLM 不可用时直接降级
+        if self._llm_client is None:
+            return self._fallback_style_hints(scenario)
+
+        loop = asyncio.get_running_loop()
+        raw_text = getattr(intent, "raw_text", "")
+
+        system_content = (
+            "你是一个活动规划策略设计师。请根据用户的出行意图，"
+            "生成 3 个不同的搜索方向（style hints），每个方向用 2-4 个中文字概括。\n"
+            "要求：\n"
+            "1. 三个方向必须覆盖用户意图的不同侧面（如户外、文艺、美食、娱乐等）\n"
+            "2. 每个方向用 2-4 个中文字，简洁有力\n"
+            "3. 方向之间要有明显区分度，避免重叠\n"
+            '以 JSON 格式返回：{"hints": ["方向1", "方向2", "方向3"]}\n'
+            "不要包含任何其他内容。"
+        )
+        user_content = (
+            f"用户原始输入：{raw_text}\n"
+            f"场景：{scenario}\n"
+            f"城市：{getattr(intent, 'city', '未知')}\n"
+            f"参与者：{getattr(intent, 'participants', '未知')}\n"
+            f"偏好：{getattr(intent, 'soft_preferences', [])}\n"
+            "请生成 3 个不同的搜索方向。"
+        )
+
+        messages: list[LLMMessage] = [
+            LLMMessage(role="system", content=system_content),
+            LLMMessage(role="user", content=user_content),
+        ]
+
+        try:
+            response = await loop.run_in_executor(
+                None,
+                lambda: self._llm_client.chat(messages, json_mode=True),  # type: ignore[union-attr]
+            )
+            parsed = parse_json_response(response, required_fields=["hints"])
+            hints: list[str] = parsed["hints"]
+
+            if not isinstance(hints, list) or len(hints) != 3:
+                logger.warning(
+                    "[%s] _generate_style_hints: LLM returned %d hints (expected 3), using fallback",
+                    self.name, len(hints) if isinstance(hints, list) else 0,
+                )
+                return self._fallback_style_hints(scenario)
+
+            logger.debug(
+                "[%s] _generate_style_hints: %s",
+                self.name, hints,
+            )
+            return hints
+
+        except (LLMParseError, Exception) as exc:
+            logger.warning(
+                "[%s] _generate_style_hints: LLM call/parse failed: %s, using fallback",
+                self.name, exc,
+            )
+            return self._fallback_style_hints(scenario)
+
+    @staticmethod
+    def _fallback_style_hints(scenario: str) -> list[str]:
+        """静态降级：生成硬编码风格 hints。"""
+        if scenario == "friends_4_mixed_gender":
+            return ["户外打卡", "娱乐社交", "文艺探索"]
+        return ["亲子户外", "文化艺术", "休闲社交"]
 
     # ------------------------------------------------------------------
     # 策略 ReAct 循环
