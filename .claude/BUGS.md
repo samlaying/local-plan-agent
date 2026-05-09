@@ -31,14 +31,6 @@
 ## 待处理
 
 
-### [LOW] WorkbenchContext canTransitionTo 非响应式
-
-**位置**: `apps/web/src/features/planner/contexts/WorkbenchContext.tsx`
-
-**描述**: `canTransitionTo` 用 ref 实现，不会触发 consumer re-render。当前消费方均在事件处理函数里调用，无影响。若未来有响应式需求会出问题。
-
----
-
 ### [LOW] wsClient 在 SSR 环境下实例化 WebSocket
 
 **位置**: `apps/web/src/lib/ws-client.ts`
@@ -61,14 +53,6 @@
 
 ---
 
-### [WARNING] OpenAIClient 超时异常在 Python < 3.11 漏捕获
-
-**位置**: `services/llm/providers/openai_client.py`
-
-**描述**: 捕获内置 `TimeoutError`，但 Python < 3.11 `socket.timeout` 不继承自内置 `TimeoutError`（只继承自 `OSError`）。超时会被 `except OSError` 捕获，错误信息为"网络连接异常"而非"请求超时"。功能不受影响（重试逻辑仍正常），仅错误日志不准确。
-
----
-
 ### [LOW] ExecutionResult 缺少 action_id / action_title
 
 **位置**: `services/agent/nodes/execution_node.py`，`agent/state/types.py`
@@ -76,6 +60,28 @@
 **描述**: `ExecutionResult` 只有 `action_type`、`success`、`detail`，缺少 `action_id`。前端 `execution_result` 消息无法将执行结果精确映射回具体动作，只能按 action_type 做模糊匹配。
 
 **建议**: `ExecutionResult` 增加 `action_id: str | None` 可选字段，ExecutionNode 赋值。
+
+---
+
+### [LOW] VerifierNode 双阶段均 reject 时 plan_revision_count +2
+
+**位置**: `services/agent/nodes/verifier_node.py`，`run()` 方法
+
+**描述**: 同一轮 VerifierNode 运行中，若硬约束阶段和 LLM Critic 阶段各自都有方案被 reject，`plan_revision_count` 会被累加两次（各阶段各加 1）。Orchestrator 的回环判断基于 `plan_revision_count` 的增量，+2 会导致跳过一次重试机会（MAX_PLAN_REVISION=2 的情况下实际只重试 1 次而非 2 次）。
+
+**发现时间**: 2026-05-07（PR review）
+
+---
+
+### [LOW] _filter_rejection_reason_for_strategy 与 verifier_rejection_reason 格式隐式耦合
+
+**位置**: `services/agent/nodes/planning_node.py`，`_filter_rejection_reason_for_strategy()`
+
+**描述**: 该方法通过字符串匹配 `plan_s{N}_` 前缀来过滤 rejection reason，依赖 `PlanningState.verifier_rejection_reason` property 的格式化输出（`方案 plan_sN_M（...）：...`）。如果 property 的文本格式发生变更，过滤会静默失效——不报错，只是所有策略都拿不到 rejection reason，重试 prompt 退化为无改进建议状态。
+
+**建议**: 在 `_filter_rejection_reason_for_strategy` 加注释说明依赖格式；或将格式化改为结构化数据（每条 rejection 以 dict 形式传递，不依赖字符串解析）。
+
+**发现时间**: 2026-05-07（PR review）
 
 ---
 

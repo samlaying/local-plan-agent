@@ -83,16 +83,14 @@ Next.js page → apps/web/src/lib/api-client.ts → FastAPI /api/plans/preview
 ```
 
 ### Agent Workflow Nodes (Ordered)
-The workflow is a custom state machine with explicit node schemas:
-1. `intent_parser` - Parse natural language into structured intent
-2. `constraint_normalizer` - Normalize constraints
-3. `context_resolver` - Resolve user context
-4. `candidate_search` - Search POI/restaurants
-5. `route_feasibility` - Check route feasibility
-6. `ranking` - Rank candidates
-7. `itinerary_composer` - Compose plans
-8. `validator` - Critique and validate plans
-9. `execution_planner` - Generate executable actions
+The workflow is a custom state machine. Current actual nodes (in order):
+1. `IntentParserNode` - Parse natural language → UserIntentSchema
+2. `ProfileNode` - Load scenario profile (family/friends)
+3. `RetrievalNode` - Weather + routes (main path); 3 strategy ReAct loops (strategy path)
+4. `PlanningNode` - Multi-strategy parallel plan generation
+5. `VerifierNode` - Score/filter; blocks low-quality plans
+6. `FeedbackNode` - User feedback integration
+7. `ExecutionNode` - Generate executable actions
 
 **Key Principle**: Every node accepts typed planning state, returns partial state patch, records tool calls, and avoids direct HTTP/database access unless explicitly owned.
 
@@ -104,6 +102,16 @@ The workflow is a custom state machine with explicit node schemas:
 - `POST /api/actions/{action_id}/execute` - Execute an action
 
 ## Key Implementation Patterns
+
+### RetrievalNode State Split
+`state.retrieval` only holds `weather` + `route_info` (activities/restaurants always empty).
+Per-strategy POI candidates live in `state.retrieval_strategies` (list of 3 strategy results).
+`PlanningNode` reads from `retrieval_strategies`; `retrieval` is fallback if all strategies fail.
+
+### AMap QPS Handling
+`AmapSearcher._search_around()` auto-retries on `CUQPS_HAS_EXCEEDED_THE_LIMIT` (up to 3x, 0.5/1.0/1.5s delay).
+Other non-1 AMap status codes are logged as warning and return empty list without retry.
+The method is sync (runs inside `run_in_executor`), so `time.sleep` is safe.
 
 ### State Machine Design
 - Keep node input/output schemas explicit for LangGraph migration
@@ -120,8 +128,8 @@ Business logic lives in `services/domain/`, not in HTTP routes or agent nodes:
 - `execution/` - Action plan creation and execution
 
 ### Mock vs Real APIs
-The system uses mock data during MVP:
-- Set `USE_MOCK_POI=true` to use mock POI data
+Real AMap (高德) POI search is active when `AMAP_API_KEY` is set and `USE_MOCK_POI=false`.
+- Set `USE_MOCK_POI=true` to use mock POI data (MockPOISearcher)
 - Set `USE_MOCK_RESTAURANT=true` for mock restaurant details
 - Set `USE_MOCK_EXECUTION=true` for mock booking/ticketing
 - Real AMap (高德) API integration planned for later
@@ -191,3 +199,49 @@ Currently no test suite exists. When adding tests:
 - Backend: Use pytest in `services/api/`
 - Frontend: Use Jest/React Testing Library in `apps/web/`
 - Test workflow nodes independently before integration
+
+<!-- gitnexus:start -->
+# GitNexus — Code Intelligence
+
+This project is indexed by GitNexus as **local-plan-agent** (3067 symbols, 4905 relationships, 72 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+
+> If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
+
+**优先级：需要查看代码依赖关系、调用链、执行流时，GitNexus 是首选工具。优先于 grep、Glob、Agent 探索。**
+
+## Always Do
+
+- **MUST run impact analysis before editing any symbol.** Before modifying a function, class, or method, run `gitnexus_impact({target: "symbolName", direction: "upstream"})` and report the blast radius (direct callers, affected processes, risk level) to the user.
+- **MUST run `gitnexus_detect_changes()` before committing** to verify your changes only affect expected symbols and execution flows.
+- **MUST warn the user** if impact analysis returns HIGH or CRITICAL risk before proceeding with edits.
+- When exploring unfamiliar code, use `gitnexus_query({query: "concept"})` to find execution flows instead of grepping. It returns process-grouped results ranked by relevance.
+- When you need full context on a specific symbol — callers, callees, which execution flows it participates in — use `gitnexus_context({name: "symbolName"})`.
+
+## Never Do
+
+- NEVER edit a function, class, or method without first running `gitnexus_impact` on it.
+- NEVER ignore HIGH or CRITICAL risk warnings from impact analysis.
+- NEVER rename symbols with find-and-replace — use `gitnexus_rename` which understands the call graph.
+- NEVER commit changes without running `gitnexus_detect_changes()` to check affected scope.
+
+## Resources
+
+| Resource | Use for |
+|----------|---------|
+| `gitnexus://repo/local-plan-agent/context` | Codebase overview, check index freshness |
+| `gitnexus://repo/local-plan-agent/clusters` | All functional areas |
+| `gitnexus://repo/local-plan-agent/processes` | All execution flows |
+| `gitnexus://repo/local-plan-agent/process/{name}` | Step-by-step execution trace |
+
+## CLI
+
+| Task | Read this skill file |
+|------|---------------------|
+| Understand architecture / "How does X work?" | `.claude/skills/gitnexus/gitnexus-exploring/SKILL.md` |
+| Blast radius / "What breaks if I change X?" | `.claude/skills/gitnexus/gitnexus-impact-analysis/SKILL.md` |
+| Trace bugs / "Why is X failing?" | `.claude/skills/gitnexus/gitnexus-debugging/SKILL.md` |
+| Rename / extract / split / refactor | `.claude/skills/gitnexus/gitnexus-refactoring/SKILL.md` |
+| Tools, resources, schema reference | `.claude/skills/gitnexus/gitnexus-guide/SKILL.md` |
+| Index, status, clean, wiki CLI commands | `.claude/skills/gitnexus/gitnexus-cli/SKILL.md` |
+
+<!-- gitnexus:end -->

@@ -31,8 +31,15 @@ from tools.poi.base import AbstractPOISearcher
 
 logger = logging.getLogger(__name__)
 
-_AMAP_ACTIVITY_TYPES = "110000|140000|080000|060000"  # 风景名胜|运动健身|科教文化|购物
-_AMAP_RESTAURANT_TYPES = "050000"                     # 餐饮服务
+_AMAP_RESTAURANT_TYPES = "050000"  # 餐饮服务
+
+# 活动 POI 类型白名单 — LLM 不再介入类型选择，此处硬编码确保只返回适合游玩的场所。
+# 110000 = 风景名胜（公园、景点、动物园、海洋馆、广场）
+# 080000 = 体育休闲服务（运动场馆、KTV、影院、度假村、游乐场、采摘园）
+# 140100~140900 = 博物馆、展览馆、美术馆、图书馆、科技馆、天文馆、文化宫、档案馆、文艺团体
+# 061000 = 特色商业街
+# 060100 = 商场/购物中心
+_ACTIVITY_TYPE_WHITELIST = "110000|080000|140100|140200|140300|140400|140500|140600|140700|140800|140900|061000|060100"
 
 _KNOWN_SCENARIOS = ["family_weight_loss_child5", "friends_4_mixed_gender"]
 
@@ -66,10 +73,13 @@ class AmapSearcher(AbstractPOISearcher):
     def search_activities(self, intent: UserIntentSchema) -> list[POISchema]:
         """Return activity POIs near the intent origin, mapped to POISchema."""
         location = self._geocode(intent.origin, intent.city)
+        keywords = "亲子活动|休闲娱乐|景点"
+        types = _ACTIVITY_TYPE_WHITELIST
+        logger.info("AMap activity search: types=%s, keywords=%s", types, keywords)
         raw_pois = self._search_around(
             location=location,
-            keywords="亲子活动|休闲娱乐|景点",
-            types=_AMAP_ACTIVITY_TYPES,
+            keywords=keywords,
+            types=types,
             radius_m=int(intent.max_distance_km * 1000),
         )
         result: list[POISchema] = []
@@ -115,15 +125,22 @@ class AmapSearcher(AbstractPOISearcher):
 
         使用传入的 keywords / types 调用 AMap place/around，实现不同策略搜到
         真正不同的 POI 候选集。异常处理与 search_activities / search_restaurants 保持一致。
+
+        注意：activity_types 参数被忽略，始终使用 _ACTIVITY_TYPE_WHITELIST 硬编码白名单。
         """
         location = self._geocode(intent.origin, intent.city)
         radius_m = int(intent.max_distance_km * 1000)
 
-        # 活动搜索
+        # 活动搜索 — 使用硬编码白名单，忽略传入的 activity_types
+        actual_activity_types = _ACTIVITY_TYPE_WHITELIST
+        logger.info(
+            "AMap activity search (strategy): types=%s, keywords=%s",
+            actual_activity_types, activity_keywords,
+        )
         raw_activities = self._search_around(
             location=location,
             keywords=activity_keywords,
-            types=activity_types,
+            types=actual_activity_types,
             radius_m=radius_m,
         )
         activities: list[POISchema] = []
@@ -137,6 +154,10 @@ class AmapSearcher(AbstractPOISearcher):
                 )
 
         # 餐厅搜索
+        logger.info(
+            "AMap restaurant search (strategy): types=%s, keywords=%s",
+            restaurant_types, restaurant_keywords,
+        )
         raw_restaurants = self._search_around(
             location=location,
             keywords=restaurant_keywords,

@@ -41,9 +41,7 @@ logger = logging.getLogger(__name__)
 
 # 默认关键词（LLM 解析失败时使用）
 _DEFAULT_ACTIVITY_KEYWORDS = "景点|公园|休闲"
-_DEFAULT_ACTIVITY_TYPES = "110000|080000"
 _DEFAULT_RESTAURANT_KEYWORDS = "餐厅"
-_DEFAULT_RESTAURANT_TYPES = "050000"
 
 
 # ---------------------------------------------------------------------------
@@ -247,10 +245,8 @@ class RetrievalNode(BaseNode):
             f"你是一个 POI 搜索策略规划器，负责「{style_hint}」风格方向。\n"
             "你的任务是根据用户意图生成合适的高德地图搜索关键词，帮助找到最符合该风格的活动和餐厅候选。\n"
             "每次生成关键词时，以 JSON 格式返回，字段说明：\n"
-            '  "activity_keywords"  — 活动搜索关键词（用 | 分隔多个词，如"公园|亲子乐园"）\n'
-            '  "activity_types"     — 高德 POI 类型代码（用 | 分隔，如"110000|080000"）\n'
-            '  "restaurant_keywords"— 餐厅搜索关键词（如"亲子友好|健康轻食"）\n'
-            '  "restaurant_types"   — 餐厅 POI 类型代码（通常为"050000"）\n'
+            '  "activity_keywords"      — 活动搜索关键词（用 | 分隔多个词，如"公园|亲子乐园"）\n'
+            '  "restaurant_keywords"    — 餐厅搜索关键词（如"亲子友好|健康轻食"）\n'
             "每轮搜索结束后，你会收到所有候选 POI 的详情列表（名称、类别、评分、距离、营业时间、推荐游玩时长）。\n"
             f"请仔细阅读候选列表，综合判断：这批候选的数量和质量是否足以支撑「{style_hint}」风格的完整行程规划？\n"
             "判断要点：候选数量是否充足、评分和品类是否符合该风格、是否有足够选择余地。\n"
@@ -282,12 +278,15 @@ class RetrievalNode(BaseNode):
 
         # 当前关键词（使用默认值初始化，LLM 解析失败时保底）
         activity_keywords = _DEFAULT_ACTIVITY_KEYWORDS
-        activity_types = _DEFAULT_ACTIVITY_TYPES
         restaurant_keywords = _DEFAULT_RESTAURANT_KEYWORDS
-        restaurant_types = _DEFAULT_RESTAURANT_TYPES
 
         activities: list[POISchema] = []
         restaurants: list[POISchema] = []
+        # 累积变量：跨轮次去重累积搜索到的全部 POI
+        all_activities: list[POISchema] = []
+        all_restaurants: list[POISchema] = []
+        seen_activity_ids: set[str] = set()
+        seen_restaurant_ids: set[str] = set()
 
         # ------ 初始化（循环外）：调用 LLM 生成初始关键词 ------
         # 只在循环外调用一次，避免循环头重复调用导致"未搜索就 satisfied"的问题。
@@ -301,12 +300,8 @@ class RetrievalNode(BaseNode):
 
                 if "activity_keywords" in parsed:
                     activity_keywords = str(parsed["activity_keywords"])
-                if "activity_types" in parsed:
-                    activity_types = str(parsed["activity_types"])
                 if "restaurant_keywords" in parsed:
                     restaurant_keywords = str(parsed["restaurant_keywords"])
-                if "restaurant_types" in parsed:
-                    restaurant_types = str(parsed["restaurant_types"])
 
                 # 将初始 LLM 响应追加到 messages（维护对话上下文）
                 messages.append(LLMMessage(role="assistant", content=response.content))
@@ -329,17 +324,15 @@ class RetrievalNode(BaseNode):
             # ------ Act：使用当前关键词搜索 ------
             try:
                 kw_act = activity_keywords
-                ty_act = activity_types
                 kw_rest = restaurant_keywords if search_restaurants else ""
-                ty_rest = restaurant_types if search_restaurants else ""
                 activities, restaurants_raw = await loop.run_in_executor(
                     None,
                     lambda: self._searcher.search_with_strategy(
                         intent,
                         kw_act,
-                        ty_act,
+                        "",       # activity_types — 被搜索器忽略，使用硬编码白名单
                         kw_rest,
-                        ty_rest,
+                        "050000",  # restaurant_types — 固定为餐饮服务
                     ),
                 )
                 # include_meal=False 时强制清空餐厅结果（即使搜索器返回了也丢弃）
@@ -356,10 +349,25 @@ class RetrievalNode(BaseNode):
                 self.name, style_hint, iteration, len(activities), len(restaurants),
             )
 
-            # ------ Observe：把完整候选列表序列化后追加到 messages，让 LLM 评判 ------
-            candidates_text = self._serialize_candidates(activities, restaurants)
+            # ------ 累积：去重后追加到累积列表 ------
+            new_activities = []
+            new_restaurants = []
+            for poi in activities:
+                if poi.id not in seen_activity_ids:
+                    seen_activity_ids.add(poi.id)
+                    all_activities.append(poi)
+                    new_activities.append(poi)
+            for poi in restaurants:
+                if poi.id not in seen_restaurant_ids:
+                    seen_restaurant_ids.add(poi.id)
+                    all_restaurants.append(poi)
+                    new_restaurants.append(poi)
+
+            # ------ Observe：展示本轮新增 POI，并告知 LLM 累计总数 ------
+            candidates_text = self._serialize_candidates(new_activities, new_restaurants)
             observation = (
-                f"本轮搜索结果如下（共活动 {len(activities)} 条、餐厅 {len(restaurants)} 条）：\n"
+                f"本轮搜索新增 {len(new_activities)} 个活动、{len(new_restaurants)} 个餐厅"
+                f"（累计共 {len(all_activities)} 个活动、{len(all_restaurants)} 个餐厅）：\n"
                 f"{candidates_text}\n\n"
                 f"请仔细阅读以上候选列表，判断它们是否数量充足、质量达标、风格符合「{style_hint}」方向。"
                 "满意则返回 {\"satisfied\": true}，"
@@ -395,12 +403,8 @@ class RetrievalNode(BaseNode):
                 # LLM 给出了新关键词，更新并继续下一轮搜索
                 if "activity_keywords" in parsed:
                     activity_keywords = str(parsed["activity_keywords"])
-                if "activity_types" in parsed:
-                    activity_types = str(parsed["activity_types"])
                 if "restaurant_keywords" in parsed:
                     restaurant_keywords = str(parsed["restaurant_keywords"])
-                if "restaurant_types" in parsed:
-                    restaurant_types = str(parsed["restaurant_types"])
 
             except LLMParseError as exc:
                 logger.warning(
@@ -415,9 +419,9 @@ class RetrievalNode(BaseNode):
                 )
                 break
 
-        # ------ Step 5: 营业时间过滤 ------
+        # ------ Step 5: 营业时间过滤（对累积的全部 POI 做过滤）------
         open_activities, open_restaurants, rejected = await self._check_business_hours(
-            intent, activities, restaurants
+            intent, all_activities, all_restaurants
         )
 
         logger.debug(
