@@ -49,3 +49,65 @@ class AbstractPOISearcher(abc.ABC):
             (activities, restaurants) — 两个 POISchema 列表。
         """
         return self.search_activities(intent), self.search_restaurants(intent)
+
+    def search_activities_around(
+        self,
+        lat: float,
+        lng: float,
+        keywords: str,
+        radius_m: int,
+        intent: Any,
+    ) -> list[Any]:
+        """Search activity POIs around an arbitrary coordinate pair.
+
+        Subclasses that support coordinate-based search (e.g., AmapSearcher)
+        should override this.  Default implementation returns an empty list.
+
+        Args:
+            lat:       Latitude of the search center.
+            lng:       Longitude of the search center.
+            keywords:  Search keywords (pipe-separated).
+            radius_m:  Search radius in meters.
+            intent:    UserIntentSchema with scenario / city / distance constraints.
+
+        Returns:
+            list of POISchema with distance_km relative to (lat, lng).
+        """
+        return []
+
+    def search_restaurants_around(
+        self,
+        lat: float,
+        lng: float,
+        keywords: str,
+        radius_m: int,
+        intent: Any,
+    ) -> list[Any]:
+        """Search restaurant POIs around an arbitrary coordinate pair.
+
+        Subclasses that support coordinate-based search (e.g., AmapSearcher)
+        should override this.  Default implementation returns an empty list.
+
+        Args:
+            lat:       Latitude of the search center.
+            lng:       Longitude of the search center.
+            keywords:  Search keywords (pipe-separated).
+            radius_m:  Search radius in meters.
+            intent:    UserIntentSchema with scenario / city / distance constraints.
+
+        Returns:
+            list of POISchema with distance_km relative to (lat, lng).
+        """
+        return []
+
+    def geocode(self, address: str, city: str) -> tuple[float, float]:
+        """Geocode an address string to (lat, lng).
+
+        Subclasses with real geocoding capability (e.g., AmapSearcher)
+        should override this.  Default implementation returns a fallback
+        coordinate for Shanghai People's Square.
+
+        Returns:
+            (lat, lng) tuple.
+        """
+        return (31.2304, 121.4737)

@@ -72,6 +72,7 @@ def _hr() -> None:
 
 async def run(query: str) -> None:
     from app.core.llm import get_llm_client
+    from domain.route import haversine_km
     from agent.nodes.intent_parser import IntentParserNode
     from agent.nodes.retrieval_node import RetrievalNode
     from agent.nodes.planning_node import PlanningNode
@@ -93,7 +94,7 @@ async def run(query: str) -> None:
     intent_node    = IntentParserNode(llm_client=llm_client)
     poi_searcher   = MockPOISearcher(repository=MockPOIRepository()) if use_mock else AmapSearcher()
     retrieval_node = RetrievalNode(searcher=poi_searcher, llm_client=llm_client)
-    planning_node  = PlanningNode(llm_client=llm_client)
+    planning_node  = PlanningNode(llm_client=llm_client, retrieval_node=retrieval_node)
     verifier_node  = VerifierNode(llm_client=llm_client)
 
     state = PlanningState(
@@ -211,7 +212,7 @@ async def run(query: str) -> None:
         # 行程步骤
         for step in plan.steps:
             if step.type == "transit":
-                print(f"  {_c(DIM, f'  {step.start_time} →  {step.title}')}")
+                print(f"  {_c(DIM, f'  {step.start_time} →  {step.title} ({step.duration_minutes} min)')}")
             else:
                 type_icon = {"activity": "★", "meal": "♨", "extra": "◆"}.get(step.type, "·")
                 print(f"  {_c(CYAN, type_icon)} {_c(BOLD, step.start_time)}  {step.title}")
@@ -224,10 +225,16 @@ async def run(query: str) -> None:
                     print(f"              {_c(YELLOW, '! ' + step.risks[0])}")
 
         print()
-        # POI 卡片
-        for poi in plan.pois:
+        # POI 卡片 — 按 plan.steps 中的 POI 顺序显示
+        for idx, poi in enumerate(plan.pois):
+            if idx == 0:
+                dist_label = f"距出发 {poi.distance_km:.1f}km"
+            else:
+                prev = plan.pois[idx - 1]
+                d = haversine_km(prev.location.lat, prev.location.lng, poi.location.lat, poi.location.lng)
+                dist_label = f"距上一站 {d:.1f}km"
             print(f"  {_c(DIM, '  ')}📍 {_c(BOLD, poi.name)}{_c(DIM, f'  {poi.subcategory}')}")
-            print(f"       评分 {poi.rating:.1f}  距离 {poi.distance_km:.1f}km  "
+            print(f"       评分 {poi.rating:.1f}  {dist_label}  "
                   f"人均 {poi.price_per_person}元  排队 {poi.queue.wait_minutes}min")
             print(f"       营业 {poi.business_hours.open}–{poi.business_hours.close}"
                   + (f"  可预约" if poi.reservable else ""))

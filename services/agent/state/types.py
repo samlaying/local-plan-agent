@@ -75,6 +75,61 @@ class UserProfile(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# QualityAssessment — LLM Judge 在 search_and_judge 中生成的候选质量评估
+# ---------------------------------------------------------------------------
+
+class QualityAssessment(BaseModel):
+    """质量评估结果，由 LLM Judge 在 search_and_judge 中生成。"""
+
+    passed: bool
+    """候选是否通过质量门槛。"""
+
+    score: int = Field(default=0, ge=0, le=100)
+    """0-100 质量评分。"""
+
+    strengths: list[str] = Field(default_factory=list)
+    """候选集的优点。"""
+
+    weaknesses: list[str] = Field(default_factory=list)
+    """候选集的缺点。"""
+
+    suggested_keywords: str | None = None
+    """未通过时建议的更好关键词，供重试使用。"""
+
+    empty_area: bool = False
+    """该区域是否真的缺乏 POI（而非搜索关键词不当）。"""
+
+    judge_reasoning: str = ""
+    """评审者的综合判断理由。"""
+
+
+# ---------------------------------------------------------------------------
+# SearchAndJudgeResult — RetrievalNode.search_and_judge 的单次返回结果
+# ---------------------------------------------------------------------------
+
+class SearchAndJudgeResult(BaseModel):
+    """RetrievalNode.search_and_judge 的返回值，包含候选列表和质量评估。"""
+
+    candidates: list[POISchema] = Field(default_factory=list)
+    """通过质量筛选的候选 POI 列表。"""
+
+    assessment: QualityAssessment
+    """对这批候选的质量评估。"""
+
+    search_center_lat: float = 0.0
+    """搜索中心纬度。"""
+
+    search_center_lng: float = 0.0
+    """搜索中心经度。"""
+
+    search_type: str = "activity"
+    """搜索类型，"activity" 或 "restaurant"。"""
+
+    style: str = ""
+    """所属策略方向。"""
+
+
+# ---------------------------------------------------------------------------
 # RetrievalResult — Retrieval Node 的输出，聚合候选资源
 # ---------------------------------------------------------------------------
 
@@ -138,6 +193,9 @@ class PlanningState:
 
     # Retrieval 阶段：每个搜索策略独立的候选集（多策略并行搜索时填充）
     retrieval_strategies: list[RetrievalResult] = field(default_factory=list)
+
+    # Retrieval 阶段：策略方向名称列表，由 RetrievalNode 填充供 PlanningNode 使用
+    style_hints: list[str] = field(default_factory=list)
 
     # Planning 阶段：候选方案列表
     candidate_plans: list[PlanSchema] = field(default_factory=list)

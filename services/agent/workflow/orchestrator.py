@@ -115,7 +115,7 @@ async def run_orchestrator(session: Session) -> None:
         else:
             poi_searcher = AmapSearcher()
         retrieval_node = RetrievalNode(searcher=poi_searcher, llm_client=llm_client)
-        planning_node = PlanningNode(llm_client=llm_client)
+        planning_node = PlanningNode(llm_client=llm_client, retrieval_node=retrieval_node)
         verifier_node = VerifierNode(llm_client=llm_client)
 
         await _phase_start(session)

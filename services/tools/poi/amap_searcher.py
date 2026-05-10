@@ -176,6 +176,84 @@ class AmapSearcher(AbstractPOISearcher):
 
         return activities, restaurants
 
+    def search_activities_around(
+        self,
+        lat: float,
+        lng: float,
+        keywords: str,
+        radius_m: int,
+        intent: UserIntentSchema,
+    ) -> list[POISchema]:
+        """Search activity POIs around an arbitrary coordinate pair.
+
+        Unlike ``search_activities`` (which geocodes the user's origin),
+        this method accepts an explicit lat/lng and searches around that
+        point.  ``distance_km`` and ``travel_minutes`` on each result
+        reflect the distance from the given coordinate (returned by AMap).
+        """
+        location = f"{lng},{lat}"
+        types = _ACTIVITY_TYPE_WHITELIST
+        logger.info(
+            "AMap activity search around (%.4f, %.4f): types=%s, keywords=%s, radius=%dm",
+            lat, lng, types, keywords, radius_m,
+        )
+        raw_pois = self._search_around(
+            location=location,
+            keywords=keywords,
+            types=types,
+            radius_m=radius_m,
+        )
+        result: list[POISchema] = []
+        for poi in raw_pois:
+            try:
+                result.append(self._map_to_schema(poi, intent, is_restaurant=False))
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "search_activities_around: skipping activity POI %s: %s",
+                    poi.get("id"), exc,
+                )
+        return result
+
+    def search_restaurants_around(
+        self,
+        lat: float,
+        lng: float,
+        keywords: str,
+        radius_m: int,
+        intent: UserIntentSchema,
+    ) -> list[POISchema]:
+        """Search restaurant POIs around an arbitrary coordinate pair."""
+        location = f"{lng},{lat}"
+        raw_pois = self._search_around(
+            location=location,
+            keywords=keywords,
+            types=_AMAP_RESTAURANT_TYPES,
+            radius_m=radius_m,
+        )
+        result: list[POISchema] = []
+        for poi in raw_pois:
+            try:
+                result.append(self._map_to_schema(poi, intent, is_restaurant=True))
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "search_restaurants_around: skipping restaurant POI %s: %s",
+                    poi.get("id"), exc,
+                )
+        return result
+
+    # ------------------------------------------------------------------
+    # Public geocode interface
+    # ------------------------------------------------------------------
+
+    def geocode(self, address: str, city: str) -> tuple[float, float]:
+        """Public geocode: convert address to (lat, lng).
+
+        Delegates to ``_geocode`` which returns "lng,lat" and caches results.
+        """
+        location = self._geocode(address, city)
+        lng_str, lat_str = location.split(",", 1)
+        return float(lat_str), float(lng_str)
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
