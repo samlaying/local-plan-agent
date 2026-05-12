@@ -46,6 +46,7 @@ _INTENT_SCHEMA_DESCRIPTION = (
     "budget_per_person（人均预算，数字或 null），"
     "diet_requirements（饮食要求字符串列表），"
     "soft_preferences（软性偏好字符串列表），"
+    "include_meal（是否需要安排用餐，布尔值），"
     "missing_required_slots（缺失的必填槽位名列表，从 [origin, time_window, participants] 中选），"
     "clarification_question（针对缺失槽位的追问，中文字符串，若槽位完整则为 null）"
 )
@@ -57,6 +58,7 @@ _INTENT_REQUIRED_FIELDS = [
     "participants",
     "travel_mode",
     "max_distance_km",
+    "include_meal",
     "missing_required_slots",
 ]
 
@@ -67,7 +69,10 @@ _SYSTEM_PROMPT = """\
 1. origin（出发地）：用户提到的出发地点，如"人民广场"、"家"、"公司"。未提及则为 null。
 2. city（城市）：活动所在城市，默认"{default_city}"，用户明确提及其他城市时使用用户城市。
 3. date（日期）：活动日期（YYYY-MM-DD）。"今天"=当天，"明天"=明天，未提及则用今天的日期。
-4. start_time / end_time（HH:MM）：活动时间窗口。"上午"→09:30-14:30，"下午"→14:00-20:00，"晚上"→18:00-22:30，未提及则为 null。
+4. start_time / end_time（HH:MM）：活动时间窗口，结合具体上下文推断。
+   - 用户给出了具体时间，以用户为准（如"两点出门"→14:00；"六点吃饭"→以六点为用餐时间，估算活动结束时间）。
+   - 用户只给了模糊标签才使用默认值："上午"→09:30-12:00，"下午"→14:00-18:00，"晚上"→18:00-21:00。
+   - 不确定时为 null。
 5. participants（人员列表）：
    - 每项含：type（adult/child/elder）、count（数量）、age（年龄或 null）、relationship（关系描述或 null）、notes（备注列表）
    - "老婆/妻子" → adult count=1 relationship="wife"
@@ -84,6 +89,10 @@ _SYSTEM_PROMPT = """\
     - time_window 必填：start_time 和 end_time 都为 null 时加入
     - participants 必填：participants 列表为空时加入
 12. clarification_question：如果 missing_required_slots 非空，生成一句自然的中文追问，同时询问所有缺失槽位。如果槽位完整则为 null。
+13. include_meal（布尔值）：是否需要在行程中安排用餐。判断规则：
+    - true：用户明确提到吃饭/餐厅/美食/饭/吃点什么等；或活动时间窗口跨越午餐时段（11:30–13:30）或晚餐时段（17:30–20:00）超过 30 分钟；或无法确定时。
+    - false：用户只是短暂活动（如"溜两小时"）且时间不跨越用餐时段；或用户明确表示不需要用餐。
+    - 不确定时默认 true（宁可多安排，不要漏）。
 
 当前日期：{today}
 """
@@ -248,6 +257,10 @@ def _build_intent(raw_text: str, data: dict[str, Any]) -> UserIntentSchema:
     # 补充 scenario 对应的软性偏好（若 LLM 没提取到）
     soft_preferences = _enrich_soft_preferences(scenario, soft_preferences, diet_requirements)
 
+    # include_meal: LLM 返回布尔值，缺失时默认 True
+    raw_include_meal = data.get("include_meal")
+    include_meal: bool = bool(raw_include_meal) if raw_include_meal is not None else True
+
     return UserIntentSchema(
         raw_text=raw_text,
         city=data.get("city") or "上海",
@@ -263,6 +276,7 @@ def _build_intent(raw_text: str, data: dict[str, Any]) -> UserIntentSchema:
         soft_preferences=soft_preferences,
         diet_requirements=diet_requirements,
         scenario=scenario,
+        include_meal=include_meal,
     )
 
 

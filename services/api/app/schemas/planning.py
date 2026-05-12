@@ -51,6 +51,7 @@ class UserIntentSchema(BaseModel):
     soft_preferences: list[str] = Field(default_factory=list)
     diet_requirements: list[str] = Field(default_factory=list)
     scenario: Scenario
+    include_meal: bool = True
 
 
 class BusinessHoursSchema(BaseModel):

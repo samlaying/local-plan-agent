@@ -31,7 +31,8 @@
       "Bash(uv run *)",
       "Bash(uv sync *)",
       "Bash(dir services *)",
-      "Bash(git rebase *)"
+      "Bash(git rebase *)",
+      "Bash(git checkout *)"
     ]
   }
 }
