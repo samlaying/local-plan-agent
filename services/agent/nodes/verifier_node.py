@@ -57,11 +57,16 @@ logger = logging.getLogger(__name__)
 _CRITIC_SYSTEM_PROMPT = """\
 你是一位严格的本地生活行程方案审核专家。你的任务是对候选行程方案进行质量评估。
 
+重要审核原则：
+- 你收到的「用户原始对话」是用户最直接的表述，结构化字段由上游意图解析器自动提取，可能存在遗漏或偏差。
+- 请以「用户原始对话」为最高依据，交叉验证结构化字段是否准确。发现矛盾时在对应维度中体现并扣分。
+- 用户明确说了要吃饭/用餐/晚饭/午饭，但方案中没有餐厅（或用餐时间明显不对）→ requirement_coverage 直接打到 2 分或以下。
+
 请对每个方案从以下 7 个维度各打 1-5 分（整数），并给出一句话说明：
 1. 风格一致性：活动+餐厅组合是否连贯、与策略风格是否匹配
 2. 人群真实匹配：语义层面的适配（5岁孩子能否参与、减脂与餐厅菜式是否契合）
 3. 节奏合理性：时间分配是否合理，活动强度前后搭配是否舒适
-4. 需求覆盖度：soft_preferences 和 diet_requirements 被满足的程度
+4. 需求覆盖度：用户原始对话中所有显式/隐式需求被满足的程度（包括用餐、时间、偏好等）
 5. 可执行性：综合排队时间、预约需求判断方案是否能顺利走完
 6. 方案差异度：与其他候选方案相比是否提供真正不同的选择
 7. 整体体验感：用户跑完这个方案会不会觉得满意
@@ -131,7 +136,8 @@ def _build_critic_user_message(
 
     # --- 用户意图 ---
     parts.append("=== 用户意图 ===\n")
-    parts.append(f"原始需求：{intent.raw_text}\n")
+    parts.append(f"用户原始对话（以此为准）：{intent.raw_text}\n")
+    parts.append("--- 以下结构化字段由上游自动提取，仅供参考 ---\n")
     parts.append(f"场景：{intent.scenario}\n")
     tw = intent.time_window
     parts.append(f"出行时间：{tw.date} {tw.start or ''}–{tw.end or ''} {tw.label or ''}\n".strip() + "\n")
@@ -150,6 +156,8 @@ def _build_critic_user_message(
 
     if intent.diet_requirements:
         parts.append(f"饮食要求：{', '.join(intent.diet_requirements)}\n")
+    include_meal = getattr(intent, "include_meal", True)
+    parts.append(f"用餐安排：{'需要' if include_meal else '不需要'}\n")
     if intent.soft_preferences:
         parts.append(f"软性偏好：{', '.join(intent.soft_preferences)}\n")
     if intent.hard_constraints:
@@ -251,6 +259,18 @@ def _collect_rule_checks(
                 ),
             })
 
+    # 用餐需求检查：用户需要用餐但方案中没有餐厅类别 POI
+    include_meal = getattr(intent, "include_meal", True)
+    if include_meal:
+        has_restaurant = any(poi.category == "restaurant" for poi in plan.pois)
+        if not has_restaurant:
+            issues.append({
+                "rule": "missing_meal",
+                "poi_id": "",
+                "poi_name": "",
+                "detail": "用户需要安排用餐，但方案中没有餐厅",
+            })
+
     return issues
 
 
@@ -262,7 +282,7 @@ def _check_hard_constraints(
     intent: UserIntentSchema,
     plan: PlanSchema,
 ) -> list[dict[str, Any]]:
-    """只检查时长和距离两条硬约束，返回违规列表（空 = 通过）。"""
+    """检查时长、距离、用餐三条硬约束，返回违规列表（空 = 通过）。"""
     violations: list[dict[str, Any]] = []
 
     max_allowed_minutes = int(intent.duration_hours_max * 60)
@@ -285,6 +305,15 @@ def _check_hard_constraints(
                     f"{poi.name} 距离 {poi.distance_km} km "
                     f"超过用户上限 {intent.max_distance_km} km"
                 ),
+            })
+
+    include_meal = getattr(intent, "include_meal", True)
+    if include_meal:
+        has_restaurant = any(poi.category == "restaurant" for poi in plan.pois)
+        if not has_restaurant:
+            violations.append({
+                "rule": "missing_meal",
+                "detail": "用户需要安排用餐，但方案中没有餐厅",
             })
 
     return violations

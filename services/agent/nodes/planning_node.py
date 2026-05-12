@@ -637,6 +637,7 @@ class PlanningNode(BaseNode):
             plans = await self._plan_with_exploration(
                 intent, weather, style_hints,
                 rejection_reason, preference_adjustments,
+                traces=traces,
             )
         else:
             # LLM 不可用或无风格方向时回退
@@ -678,7 +679,13 @@ class PlanningNode(BaseNode):
         style_hints: list[str],
         rejection_reason: str | None = None,
         preference_adjustments: list[str] | None = None,
+        state: PlanningState | None = None,
     ) -> list[PlanSchema]:
+        """通过多风格并行探索生成方案。
+
+        为每个风格方向运行 _explore_one_style()，然后将探索结果组装为方案。
+        并行探索产生的 trace 按风格顺序依次写入 state.trace，避免交叉混乱。
+        """
         """通过多风格并行探索生成方案。
 
         为每个风格方向运行 _explore_one_style()，然后将探索结果组装为方案。
@@ -706,7 +713,14 @@ class PlanningNode(BaseNode):
                 )
                 continue
 
-            selected: list[POISchema] = result
+            selected: list[POISchema]
+            style_traces: list[TraceEvent]
+            selected, style_traces = result
+
+            # 按风格顺序写入 trace，避免并行交叉
+            if state is not None:
+                state.trace.extend(style_traces)
+
             if not selected:
                 logger.debug(
                     "PlanningNode: 风格 %r 探索未选中任何 POI，跳过",
@@ -734,7 +748,7 @@ class PlanningNode(BaseNode):
         style: str,
         weather: str,
         max_hops: int = 4,
-    ) -> list[POISchema]:
+    ) -> tuple[list[POISchema], list[TraceEvent]]:
         """单个风格的多跳探索循环。
 
             流程：
@@ -753,7 +767,7 @@ class PlanningNode(BaseNode):
             max_hops:   最大探索跳数。
 
         Returns:
-            按顺序选中的 POI 列表；可能为空列表。
+            (按顺序选中的 POI 列表, 该风格探索的 trace 事件列表)
         """
         current_lat, current_lng = origin_lat, origin_lng
         selected: list[POISchema] = []
@@ -761,11 +775,18 @@ class PlanningNode(BaseNode):
         cumulative_km = 0.0
         has_eaten = False
         total_budget_minutes = int(intent.duration_hours_max * 60)
+        traces: list[TraceEvent] = []
 
         # 每条风格的 LLM 上下文在各跳之间累积
         messages: list[LLMMessage] = [
             LLMMessage(role="system", content=_HOP_DECISION_SYSTEM_PROMPT),
         ]
+
+        traces.append(TraceEvent(
+                agent=self.name,
+                status="running",
+                message=f"开始「{style}」路线探索 (起点 {origin_lat:.4f},{origin_lng:.4f} 预算 {total_budget_minutes}min)",
+            ))
 
         for hop in range(max_hops):
             remaining = total_budget_minutes - consumed_minutes
@@ -778,6 +799,12 @@ class PlanningNode(BaseNode):
                 )
                 break
 
+            traces.append(TraceEvent(
+                    agent=self.name,
+                    status="running",
+                    message=f"第 {hop+1} 跳 — 剩余 {remaining}min · 累计 {cumulative_km:.1f}km",
+                ))
+
             # --- 获取活动候选 ---
             result = await self._retrieval_node.search_and_judge(
                 lat=current_lat,
@@ -786,6 +813,7 @@ class PlanningNode(BaseNode):
                 intent=intent,
                 search_type="activity",
                 exclude_poi_ids={p.id for p in selected},
+                traces=traces,
             )
 
             if not result.candidates:
@@ -823,6 +851,11 @@ class PlanningNode(BaseNode):
             action = decision.get("action", "stop")
 
             if action == "stop":
+                traces.append(TraceEvent(
+                    agent=self.name,
+                    status="done",
+                    message=f"第 {hop+1} 跳 LLM 决定停止探索",
+                ))
                 logger.debug(
                     "[%s] explore style=%r: LLM stopped at hop %d",
                     self.name, style, hop,
@@ -861,6 +894,12 @@ class PlanningNode(BaseNode):
                 selected.append(poi)
                 current_lat, current_lng = poi.location.lat, poi.location.lng
 
+                traces.append(TraceEvent(
+                    agent=self.name,
+                    status="done",
+                    message=f"第 {hop+1} 跳 选中「{poi.name}」({poi.subcategory}) 距当前位置 {step_km:.1f}km",
+                ))
+
                 if poi.category == "restaurant":
                     has_eaten = True
 
@@ -875,6 +914,12 @@ class PlanningNode(BaseNode):
                 if not getattr(intent, "include_meal", True):
                     continue
 
+                traces.append(TraceEvent(
+                    agent=self.name,
+                    status="running",
+                    message=f"第 {hop+1} 跳 LLM 请求搜索附近餐厅...",
+                ))
+
                 meal_result = await self._retrieval_node.search_and_judge(
                     lat=current_lat,
                     lng=current_lng,
@@ -882,6 +927,7 @@ class PlanningNode(BaseNode):
                     intent=intent,
                     search_type="restaurant",
                     exclude_poi_ids={p.id for p in selected},
+                    traces=traces,
                 )
 
                 if not meal_result.candidates:
@@ -936,8 +982,19 @@ class PlanningNode(BaseNode):
                             current_lat = restaurant.location.lat
                             current_lng = restaurant.location.lng
                             has_eaten = True
+                            traces.append(TraceEvent(
+                                agent=self.name,
+                                status="done",
+                                message=f"选中「{restaurant.name}」作为用餐点 距当前位置 {step_km:.1f}km",
+                            ))
 
-        return selected
+        traces.append(TraceEvent(
+            agent=self.name,
+            status="done",
+            message=f"「{style}」探索完成，共 {len(selected)} 个 POI · 累计 {cumulative_km:.1f}km · 耗时 {consumed_minutes}min",
+        ))
+
+        return selected, traces
 
     def _resolve_selected_poi(
         self,

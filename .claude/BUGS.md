@@ -85,6 +85,21 @@
 
 ---
 
+### [MEDIUM] PlanningNode 可能选咖啡厅/甜品店作为用餐地点
+
+**位置**: `services/agent/nodes/planning_node.py`，`_SYSTEM_PROMPT` 用餐规则（第 8 条）；`services/tools/poi/amap_searcher.py`，`search_with_strategy()`
+
+**描述**: 高德 `050000`（餐饮服务）包含所有餐饮场所——正餐、咖啡厅、甜品店、茶馆等。AMap 搜索将所有 `050000` 结果标记为 `category="restaurant"`，不区分正餐和非正餐。PlanningNode 提示只要求"需要用餐时包含 type=meal 步骤"，未指示 LLM 优先正餐（中餐、日料、火锅等）并避免咖啡厅/甜品店。导致 LLM 可能选中星巴克（subcategory=咖啡厅）作为用餐地点。
+
+**复现**: 策略路径检索到星巴克后，LLM 生成的计划中出现"在星巴克享用咖啡简餐"作为 type=meal 步骤。
+
+**建议**:
+1. PlanningNode `_SYSTEM_PROMPT` 第 8 条用餐规则增加：type=meal 优先选中餐、日料、火锅等正餐 subcategory，避免咖啡厅、甜品店、冷饮店、茶馆
+2. 或 `AmapSearcher.search_with_strategy()` 检索时过滤掉 subcategory 为咖啡厅/甜品店/冷饮店/茶艺馆的 POI
+
+**发现时间**: 2026-05-10
+
+---
 ### [LOW] ExecutionConfirmPanel 确认按钮 disabled 逻辑有歧义
 
 **位置**: `apps/web/src/components/planner/ExecutionConfirmPanel.tsx`

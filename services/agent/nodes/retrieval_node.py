@@ -162,6 +162,7 @@ class RetrievalNode(BaseNode):
         radius_m: int | None = None,
         keywords: str | None = None,
         max_retries: int = 2,
+        traces: list[TraceEvent] | None = None,
     ) -> SearchAndJudgeResult:
         """单次搜索 + 质量判断调用，无状态。
 
@@ -199,6 +200,13 @@ class RetrievalNode(BaseNode):
             keywords = await self._generate_search_keywords(style, intent, search_type)
 
         is_activity = search_type == "activity"
+        type_label = "活动" if is_activity else "餐厅"
+        if traces is not None:
+            traces.append(TraceEvent(
+                agent=self.name,
+                status="running",
+                message=f"搜索{type_label}: keywords={keywords} radius={radius_m}m @ ({lat:.4f}, {lng:.4f})",
+            ))
 
         for attempt in range(max_retries + 1):
             # --- 搜索候选 ---
@@ -280,6 +288,19 @@ class RetrievalNode(BaseNode):
                 candidates, style, intent, search_type,
             )
 
+            if traces is not None:
+                result_label = "通过" if assessment.passed else "未通过"
+                detail_parts = [f"评分={assessment.score}"]
+                if assessment.strengths:
+                    detail_parts.append(f"优点: {assessment.strengths[0]}")
+                if assessment.weaknesses:
+                    detail_parts.append(f"缺点: {assessment.weaknesses[0]}")
+                traces.append(TraceEvent(
+                    agent=self.name,
+                    status="done" if assessment.passed else "running",
+                    message=f"LLM 评估{type_label}: {result_label} ({', '.join(detail_parts)})",
+                ))
+
             if assessment.passed:
                 return SearchAndJudgeResult(
                     candidates=candidates,
@@ -303,6 +324,12 @@ class RetrievalNode(BaseNode):
             # 不通过且有重试机会 + 建议关键词
             if attempt < max_retries and assessment.suggested_keywords:
                 keywords = assessment.suggested_keywords
+                if traces is not None:
+                    traces.append(TraceEvent(
+                        agent=self.name,
+                        status="running",
+                        message=f"重试 {attempt+1}: 改用 keywords={keywords}",
+                    ))
                 logger.debug(
                     "[%s] search_and_judge: retry %d with keywords=%r",
                     self.name, attempt + 1, keywords,
