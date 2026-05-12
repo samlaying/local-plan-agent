@@ -259,18 +259,6 @@ def _collect_rule_checks(
                 ),
             })
 
-    # 用餐需求检查：用户需要用餐但方案中没有餐厅类别 POI
-    include_meal = getattr(intent, "include_meal", True)
-    if include_meal:
-        has_restaurant = any(poi.category == "restaurant" for poi in plan.pois)
-        if not has_restaurant:
-            issues.append({
-                "rule": "missing_meal",
-                "poi_id": "",
-                "poi_name": "",
-                "detail": "用户需要安排用餐，但方案中没有餐厅",
-            })
-
     return issues
 
 
@@ -368,6 +356,7 @@ class VerifierNode(BaseNode):
         # 第一阶段：硬约束（时长 + 距离）
         # ------------------------------------------------------------------
         hard_rejection_batch: list[dict[str, Any]] = []
+        _any_rejection = False
 
         for plan in state.candidate_plans:
             violations = _check_hard_constraints(intent, plan)
@@ -384,7 +373,7 @@ class VerifierNode(BaseNode):
             state.candidate_plans = [
                 p for p in state.candidate_plans if p.id not in failed_ids
             ]
-            state.plan_revision_count += 1
+            _any_rejection = True
             state.verifier_rejection_reasons.append(hard_rejection_batch)
 
             state.trace.append(TraceEvent(
@@ -449,7 +438,7 @@ class VerifierNode(BaseNode):
             state.candidate_plans = [
                 p for p in state.candidate_plans if p.id not in failed_ids
             ]
-            state.plan_revision_count += 1
+            _any_rejection = True
             state.verifier_rejection_reasons.append(llm_rejection_batch)
 
             state.trace.append(TraceEvent(
@@ -480,6 +469,14 @@ class VerifierNode(BaseNode):
                 "[%s] Phase 2: all %d plans passed LLM critic",
                 self.name,
                 len(state.candidate_plans),
+            )
+
+        if _any_rejection:
+            state.plan_revision_count += 1
+            logger.info(
+                "[%s] Verifier run complete with rejections, revision_count now %d",
+                self.name,
+                state.plan_revision_count,
             )
 
         return state

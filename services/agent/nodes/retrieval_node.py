@@ -82,6 +82,11 @@ class RetrievalNode(BaseNode):
         # repository 参数保留以维持向后兼容的构造函数签名，当前实现未使用
         self._routes_path = routes_path or self._default_routes_path()
 
+    @property
+    def searcher(self) -> AbstractPOISearcher:
+        """Public read-only access to the POI searcher."""
+        return self._searcher
+
     @staticmethod
     def _default_routes_path() -> Path:
         # services/agent/nodes/retrieval_node.py -> 上 3 级到项目根
@@ -664,6 +669,10 @@ class RetrievalNode(BaseNode):
                 self.name, intent.origin, intent.city, exc,
             )
             return (31.2304, 121.4737)
+
+    async def resolve_origin(self, intent: UserIntentSchema) -> tuple[float, float]:
+        """Public wrapper: resolve origin address to (lat, lng) coordinates."""
+        return await self._resolve_origin(intent)
 
     # ------------------------------------------------------------------
     # 天气查询（mock）

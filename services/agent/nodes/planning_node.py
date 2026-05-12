@@ -686,12 +686,8 @@ class PlanningNode(BaseNode):
         为每个风格方向运行 _explore_one_style()，然后将探索结果组装为方案。
         并行探索产生的 trace 按风格顺序依次写入 state.trace，避免交叉混乱。
         """
-        """通过多风格并行探索生成方案。
-
-        为每个风格方向运行 _explore_one_style()，然后将探索结果组装为方案。
-        """
         # 解析出发地坐标
-        origin_lat, origin_lng = await self._retrieval_node._resolve_origin(intent)
+        origin_lat, origin_lng = await self._retrieval_node.resolve_origin(intent)
 
         # 并行探索 3 个风格
         explore_tasks = [
@@ -1093,7 +1089,7 @@ class PlanningNode(BaseNode):
         loop = asyncio.get_running_loop()
 
         try:
-            origin_lat, origin_lng = await self._retrieval_node._resolve_origin(intent)
+            origin_lat, origin_lng = await self._retrieval_node.resolve_origin(intent)
         except Exception:  # noqa: BLE001
             origin_lat, origin_lng = 31.2304, 121.4737
 
@@ -1101,7 +1097,7 @@ class PlanningNode(BaseNode):
         try:
             activities = await loop.run_in_executor(
                 None,
-                lambda: self._retrieval_node._searcher.search_activities(intent),
+                lambda: self._retrieval_node.searcher.search_activities(intent),
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("[%s] fallback: activity search failed: %s", self.name, exc)
@@ -1111,7 +1107,7 @@ class PlanningNode(BaseNode):
         try:
             restaurants = await loop.run_in_executor(
                 None,
-                lambda: self._retrieval_node._searcher.search_restaurants(intent),
+                lambda: self._retrieval_node.searcher.search_restaurants(intent),
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("[%s] fallback: restaurant search failed: %s", self.name, exc)

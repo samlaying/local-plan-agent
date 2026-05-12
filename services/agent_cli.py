@@ -245,12 +245,6 @@ async def run(query: str) -> None:
     print()
 
 
-def _poi_fit_score(plan, poi) -> int:
-    """返回 POI 在方案中的 audience_fit 综合分（近似）。"""
-    af = poi.audience_fit
-    return int((af.family + af.child_age_5) / 2)
-
-
 # ── 入口 ──────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
